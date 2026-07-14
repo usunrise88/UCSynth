@@ -1,0 +1,33 @@
+# Дефолты конфигурации под ESP32-S3-N16R8 (16 МБ flash / 8 МБ Octal PSRAM).
+# Это источник правды: sdkconfig генерируется отсюда и в git не хранится.
+# Меняешь железные параметры — правь здесь, а не в сгенерированном sdkconfig.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- CPU ------------------------------------------------------------------------
+# 240 МГц: аудио-DSP упирается в такты, берём максимум.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# --- Flash: 16 МБ (N16), QIO 80 МГц --------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# --- PSRAM: 8 МБ Octal (R8) @ 80 МГц -------------------------------------------
+# Octal (OPI), НЕ Quad — иначе определится 0 или мусор. Проверяется на первом бут-логе.
+# Нужна под кольцевые буферы delay/reverb (этап 5) и большие таблицы.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# --- Таблица разделов (кастомная, под 16 МБ) -----------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Консоль / лог --------------------------------------------------------------
+# Нативный USB-Serial-JTAG S3: прошивка и логи по одному USB-кабелю, без UART-моста.
+# Если твоя плата выведена через UART-мост (CP2102/CH340) — переключи в menuconfig:
+#   Component config -> ESP System Settings -> Channel for console output -> UART0
+# (см. docs/build-flash.md, раздел «нет логов»).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

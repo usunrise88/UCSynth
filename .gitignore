@@ -1,0 +1,17 @@
+# ESP-IDF build
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.ci
+
+# Component manager
+managed_components/
+dependencies.lock
+
+# Слитый бинарь для локальной прошивки (генерируется, не хранится)
+*-merged.bin
+
+# Python / прочее
+__pycache__/
+*.pyc
+.cache/
