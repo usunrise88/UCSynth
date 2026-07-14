@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "espressif-docs": {
+      "type": "http",
+      "url": "https://mcp.espressif.com/docs"
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "esp-idf-monitor": {
+      "command": "esp-idf-mcp",
+      "env": {
+        "ESP_IDF_PATH": "${ESP_IDF_PATH}"
+      }
+    }
+  }
+}
