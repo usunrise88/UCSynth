@@ -145,10 +145,12 @@ def main():
         ("SET test_tone_hz = 440 (вернуть)", encode(bytes([SET]) + struct.pack("<Hf", 1, 440.0))),
         ("SET master_volume = 0.8 (вернуть дефолт)", encode(bytes([SET]) + struct.pack("<Hf", 0, 0.8))),
     ]
-    for title, frame in steps:
+    for i, (title, frame) in enumerate(steps):
         print(f"{title}:")
         ser.write(frame)
         drain(ser, dec)
+        if i < len(steps) - 1:
+            time.sleep(2.0)   # пауза между сменами — успеть глянуть на экран / послушать
     ser.close()
 
 
