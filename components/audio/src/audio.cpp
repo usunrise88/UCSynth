@@ -196,7 +196,12 @@ void audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
 
     // Band-limited wavetable-таблицы (октавные mip) под нашу частоту — до старта задачи.
+    // Замеряем: генерация должна быть быстрой (float/FPU). Если снова десятки мс×1000 — регресс
+    // на double-математику (у S3 нет аппаратного double → софт-эмуляция), см. wavetable.cpp.
+    const int64_t t_wt = esp_timer_get_time();
     wavetable_init((float)SAMPLE_RATE);
+    ESP_LOGI(TAG, "wavetable band-limited: mip-таблицы сгенерированы за %lld мс",
+             (esp_timer_get_time() - t_wt) / 1000);
 
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).
     s_note_q = xQueueCreate(32, sizeof(NoteEvent));
