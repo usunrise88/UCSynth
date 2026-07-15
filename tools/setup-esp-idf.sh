@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # --- настройки (можно переопределить через env) ---------------------------------
-IDF_BRANCH="${IDF_BRANCH:-v5.5.4}"     # пинуем стабильную версию: воспроизводимость сборки
+IDF_BRANCH="${IDF_BRANCH:-v6.0.2}"     # пинуем стабильную версию: воспроизводимость сборки
 IDF_TARGET="${IDF_TARGET:-esp32s3}"    # ставим тулчейн только под нужный таргет, не под все
 : "${IDF_PATH:=$HOME/esp/esp-idf}"
 export IDF_PATH
@@ -19,17 +19,35 @@ export IDF_PATH
 # а dl.espressif.com разрешён. Локально тоже работает (часто быстрее). Переопределяемо.
 export IDF_GITHUB_ASSETS="${IDF_GITHUB_ASSETS:-dl.espressif.com/github_assets}"
 
+# Сбрасываем унаследованный от прошлой версии IDF python-env. Иначе при смене версии
+# install.sh падает: «env generated for 5.5 instead of 6.0». Пусть install.sh сам
+# вычислит путь под текущую версию (в веб-сессии он мог просочиться через CLAUDE_ENV_FILE).
+unset IDF_PYTHON_ENV_PATH || true
+
 echo "[setup] IDF_PATH=$IDF_PATH  branch=$IDF_BRANCH  target=$IDF_TARGET"
 
 # --- клон ESP-IDF ----------------------------------------------------------------
+# shallow + shallow-submodules: тянем только нужную версию, экономим трафик/диск.
+clone_idf() {
+  git clone --depth 1 --branch "$IDF_BRANCH" --recursive --shallow-submodules \
+    https://github.com/espressif/esp-idf.git "$IDF_PATH"
+}
+
 mkdir -p "$(dirname "$IDF_PATH")"
 if [ ! -d "$IDF_PATH/.git" ]; then
   echo "[setup] клонирую ESP-IDF $IDF_BRANCH ..."
-  # shallow + shallow-submodules: тянем только нужную версию, экономим трафик/диск
-  git clone --depth 1 --branch "$IDF_BRANCH" --recursive --shallow-submodules \
-    https://github.com/espressif/esp-idf.git "$IDF_PATH"
+  clone_idf
 else
-  echo "[setup] ESP-IDF уже есть в $IDF_PATH — пропускаю клон"
+  # Version-aware: если пин сменился (напр. 5.5.4 -> 6.0.2), переставляем начисто.
+  # Shallow-клон на другой мажор проще переклонировать, чем чинить fetch+submodule.
+  current="$(git -C "$IDF_PATH" describe --tags --exact-match 2>/dev/null || echo none)"
+  if [ "$current" != "$IDF_BRANCH" ]; then
+    echo "[setup] версия IDF сменилась ($current -> $IDF_BRANCH), переставляю начисто ..."
+    rm -rf "$IDF_PATH"
+    clone_idf
+  else
+    echo "[setup] ESP-IDF уже на $IDF_BRANCH — пропускаю клон"
+  fi
 fi
 
 # --- системные зависимости тулчейна ---------------------------------------------

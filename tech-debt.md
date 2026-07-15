@@ -65,7 +65,7 @@
 
 ### [D-005] Тулчейн: зеркало Espressif + libusb из apt, версия IDF запинена
 - **Где:** `tools/setup-esp-idf.sh`
-- **Что:** `IDF_GITHUB_ASSETS=dl.espressif.com/github_assets`, `libusb-1.0-0` ставится через apt, IDF пин `v5.5.4`
+- **Что:** `IDF_GITHUB_ASSETS=dl.espressif.com/github_assets`, `libusb-1.0-0` ставится через apt, IDF пин `v6.0.2`
 - **Почему:** egress облачной сессии режет `github.com/.../releases` (403) → берём с CDN Espressif; openocd без libusb рушит `install.sh`; пин версии = воспроизводимость сборки
 - **Цена:** зависимость от доступности зеркала Espressif и apt в контейнере; ручной bump версии
 - **Когда чинить:** не требуется; при недоступности зеркала — переопредели `IDF_GITHUB_ASSETS` или собирай локально

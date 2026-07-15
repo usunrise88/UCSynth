@@ -12,6 +12,10 @@ if [ ! -f "$IDF_PATH/export.sh" ]; then
   exit 1
 fi
 
+# Сбрасываем возможный устаревший python-env от другой версии IDF — иначе export.sh
+# ругнётся на несоответствие версии. export.sh вычислит правильный сам.
+unset IDF_PYTHON_ENV_PATH || true
+
 # shellcheck disable=SC1091
 source "$IDF_PATH/export.sh" >/dev/null
 exec idf.py "$@"
