@@ -1,7 +1,7 @@
 # Progress
 
 **Текущий этап:** 0 — каркас и протокол
-**Статус:** 🔨 0.1 каркас собирается (проверено сборкой в облаке); 0.2/0.3 — заглушки. Проверка на железе — за пользователем.
+**Статус:** 🔨 0.1 ✅ на железе. 0.2 (реестр) + 0.3 (бинарный протокол) реализованы, проверены в облаке (сборка) и host-тестом; проверка на железе (`tools/serialtest.py`) — за пользователем.
 
 ---
 
@@ -63,16 +63,29 @@
 ### (дата) — старт проекта
 Спецификация и план зафиксированы. Бредборд собран: S3 + PCM5102 + OLED.
 
-### 2026-07-14 — этап 0.1: bootstrap каркаса
-Скелет проекта на **нативном ESP-IDF v5.5.4** (не PlatformIO — решение по roadmap 0.1 пересмотрено: нативный idf.py даёт первоклассную поддержку S3-N16R8 / Octal PSRAM без отставания версий; см. tech-debt D-005).
+### 2026-07-14 — этап 0.1: bootstrap каркаса ✅
+Скелет проекта на **нативном ESP-IDF v6.0.2** (не PlatformIO — решение по roadmap 0.1 пересмотрено: нативный idf.py даёт первоклассную поддержку S3-N16R8 / Octal PSRAM без отставания версий; см. tech-debt D-005). Изначально пин был v5.5.4; подняли до v6.0.2, чтобы совпасть с локальной установкой пользователя (на ней и прошли верификацию).
 
 Сделано:
 - Структура: `main/` + компоненты `audio/ control/ io/ comm/` (пока заглушки, `*_init()` логирует — D-004).
 - `sdkconfig.defaults` под S3-N16R8: Octal PSRAM 8 МБ @80 МГц, flash 16 МБ QIO @80 МГц, CPU 240 МГц, кастомная `partitions.csv` (factory 4 МБ + storage 8 МБ), консоль USB-Serial-JTAG.
-- Тулинг «минимум ручных команд»: `tools/setup-esp-idf.sh`, `tools/build.sh`, `Makefile` (`make build/menuconfig/size/merge/flash`).
+- Тулинг «минимум ручных команд»: `tools/setup-esp-idf.sh` (version-aware), `tools/build.sh`, `Makefile` (`make build/menuconfig/size/merge/flash`).
 - Сборка в облаке: **SessionStart-хук** (`.claude/`) ставит ESP-IDF автоматически (тулчейн с зеркала Espressif).
 - Гайд `docs/build-flash.md`: cloud→local прошивка, ожидаемый boot-лог, диагностика.
 
-Проверено **в облаке**: `idf.py build` → OK (exit 0), `ucsynth.bin` ≈187 КБ, конфиг S3-N16R8 подтверждён сборкой; SessionStart-хук отрабатывает (exit 0).
+Проверено **в облаке**: `idf.py build` → OK, конфиг S3-N16R8 подтверждён сборкой; SessionStart-хук отрабатывает (exit 0).
 
-**За пользователем (нет доступа к железу):** прошить, открыть монитор, убедиться в boot-логе, что `flash 16 МБ` и `PSRAM 8 МБ` — по `docs/build-flash.md`. Как проверишь — этап 0.1 можно ставить ✅.
+Проверено **на железе** (ESP32-S3-N16R8, ESP-IDF v6.0.2): boot-лог показал `flash 16 МБ`, `PSRAM 8 МБ` (Octal, `SPI SRAM memory test OK`), все слои `*_init`, `boot complete` + heartbeat `alive`. **Этап 0.1 закрыт ✅.**
+
+Наблюдение по прошивке (не блокер): на плате пользователя два USB — нативный USB-Serial-JTAG (сюда идут наши логи) и мост CH343. Авто-сброс после `flash` не всегда возвращает чип в run — иногда нужен ручной **RST**. Занесено в `docs/build-flash.md`.
+
+### 2026-07-15 — этапы 0.2 + 0.3: модель параметров + бинарный протокол
+**0.2 — реестр (`control`):** статический массив по `enum ParamId`, метаданные const (во flash), значения `std::atomic<float>` — lock-free (Core 1 пишет, Core 0 читает без мьютекса). API `set_param`/`get_param`/`param_count`/`param_get_info`. Сид: `master_volume`, `test_tone_hz`.
+
+**0.3 — бинарный протокол (`comm`):** формат выбран пользователем (эффективность важнее читаемости). Кадр `[55 AA][LEN][BODY][CRC16]`, CRC-16/CCITT-FALSE — демукс из ASCII-логов на общем USB-JTAG-канале. Опкоды `GET/SET/LIST/NOTE_ON/NOTE_OFF/STAT`. Транспорт: `usb_serial_jtag` драйвер + задача на **Core 1**, сырое чтение/запись (без stdio/float-printf). Логика (`frame.*`/`protocol.*`) отделена от I/O → host-тестируема. NOTE_ON/OFF пока только ACK+лог (голоса — этап 3).
+
+Проверено: **сборка в облаке** (`ucsynth.bin` ~196 КБ); **host-тест** `tools/run-host-tests.sh` (реестр, кадрирование, CRC, диспетчер; CRC check value `0x29B1` = паритет прошивки с GUI/скриптом). Долг: **D-006** (бинарь), **T-003** (общий канал log+протокол).
+
+Контракт — `docs/serial-protocol.md` (по нему пишется Go-GUI, этап 2).
+
+**За пользователем:** `python tools/serialtest.py COMx` на **нативном USB** порту — сверить ответы (LIST/GET/SET-кламп/STAT/NOTE_ON) с ожидаемым в `docs/serial-protocol.md`. Как пройдёт — этап 0 закрыт целиком, дальше этап 1 (звук).

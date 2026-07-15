@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Референс-клиент бинарного протокола UCSynth (этап 0.3).
+
+Голым терминалом бинарь не набрать — этим скриптом проверяем 0.3 на железе.
+Нужен pyserial:  pip install pyserial
+Запуск:          python tools/serialtest.py COM8
+                 (порт НАТИВНОГО USB S3 — где идут логи; не CH343-мост.)
+Протокол и раскладки — docs/serial-protocol.md.
+"""
+import struct
+import sys
+import time
+
+try:
+    import serial  # pyserial
+except ImportError:
+    sys.exit("нужен pyserial:  pip install pyserial")
+
+SYNC = b"\x55\xAA"
+
+# CMD (ПК→МК)
+SET, GET, LIST, NOTE_ON, NOTE_OFF, STAT = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06
+# RSP (МК→ПК)
+ACK, VALUE, PARAM, LISTEND, R_STAT, ERR = 0x80, 0x81, 0x82, 0x83, 0x86, 0xFF
+TYPE_NAMES = {0: "float", 1: "int", 2: "enum", 3: "bool"}
+ERR_NAMES = {1: "unknown_cmd", 2: "bad_id", 3: "bad_len"}
+
+
+def crc16(data: bytes) -> int:
+    """CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) — как в прошивке (frame.cpp)."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def encode(body: bytes) -> bytes:
+    assert 0 < len(body) <= 255
+    head = bytes([len(body)]) + body           # LEN + BODY
+    return SYNC + head + struct.pack("<H", crc16(head))
+
+
+class Decoder:
+    """Выделяет кадры из потока: пропускает ASCII-логи и мусор (не проходят CRC)."""
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def push(self, data: bytes):
+        self.buf += data
+        out = []
+        while True:
+            i = self.buf.find(SYNC)
+            if i < 0:
+                del self.buf[:max(0, len(self.buf) - 1)]   # хвост может быть началом синка
+                break
+            if i:
+                del self.buf[:i]                            # выбросить лог/мусор до синка
+            if len(self.buf) < 3:
+                break
+            length = self.buf[2]
+            need = 3 + length + 2
+            if len(self.buf) < need:
+                break
+            head = bytes(self.buf[2:3 + length])
+            crc_rx = struct.unpack_from("<H", self.buf, 3 + length)[0]
+            if crc16(head) == crc_rx:
+                out.append(bytes(self.buf[3:3 + length]))
+                del self.buf[:need]
+            else:
+                del self.buf[:2]                            # ложный синк — ресинк
+        return out
+
+
+def show(frame: bytes):
+    op = frame[0]
+    if op == VALUE:
+        pid = struct.unpack_from("<H", frame, 1)[0]
+        val = struct.unpack_from("<f", frame, 3)[0]
+        print(f"  VALUE id={pid} val={val:g}")
+    elif op == PARAM:
+        pid, typ = struct.unpack_from("<HB", frame, 1)
+        mn, mx, df, cur = struct.unpack_from("<ffff", frame, 4)
+        nl = frame[20]
+        name = frame[21:21 + nl].decode("utf-8", "replace")
+        print(f"  PARAM id={pid} {name} type={TYPE_NAMES.get(typ, typ)} "
+              f"min={mn:g} max={mx:g} def={df:g} cur={cur:g}")
+    elif op == LISTEND:
+        print(f"  LISTEND count={struct.unpack_from('<H', frame, 1)[0]}")
+    elif op == R_STAT:
+        heap, mn, up = struct.unpack_from("<III", frame, 1)
+        print(f"  STAT heap={heap} minheap={mn} uptime_ms={up}")
+    elif op == ACK:
+        print("  ACK")
+    elif op == ERR:
+        print(f"  ERR {ERR_NAMES.get(frame[1], frame[1])}")
+    else:
+        print(f"  ? op=0x{op:02X} {frame.hex()}")
+
+
+def drain(ser, dec, seconds=0.3):
+    end = time.time() + seconds
+    while time.time() < end:
+        n = ser.in_waiting
+        if n:
+            for f in dec.push(ser.read(n)):
+                show(f)
+            end = time.time() + 0.15         # пока сыпется — продлеваем
+        else:
+            time.sleep(0.01)
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit("Использование: python serialtest.py <PORT>   (напр. COM8 или /dev/ttyACM0)")
+    ser = serial.Serial(sys.argv[1], 115200, timeout=0.1)   # baud для USB-JTAG не важен
+    dec = Decoder()
+    time.sleep(0.2)
+    ser.reset_input_buffer()
+
+    steps = [
+        ("LIST",                    encode(bytes([LIST]))),
+        ("GET master_volume",       encode(bytes([GET]) + struct.pack("<H", 0))),
+        ("SET master_volume = 0.5", encode(bytes([SET]) + struct.pack("<Hf", 0, 0.5))),
+        ("GET master_volume",       encode(bytes([GET]) + struct.pack("<H", 0))),
+        ("SET master_volume = 9 (ждём кламп 1.0)", encode(bytes([SET]) + struct.pack("<Hf", 0, 9.0))),
+        ("STAT",                    encode(bytes([STAT]))),
+        ("NOTE_ON 60 100",          encode(bytes([NOTE_ON, 60, 100]))),
+        ("SET master_volume = 0.8 (вернуть дефолт)", encode(bytes([SET]) + struct.pack("<Hf", 0, 0.8))),
+    ]
+    for title, frame in steps:
+        print(f"{title}:")
+        ser.write(frame)
+        drain(ser, dec)
+    ser.close()
+
+
+if __name__ == "__main__":
+    main()
