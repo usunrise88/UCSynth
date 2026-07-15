@@ -47,7 +47,11 @@
 `LIST` → серия `PARAM` (по одному на параметр) + завершающий `LISTEND`.
 
 **Тип параметра** (`type` в PARAM): `0` float, `1` int, `2` enum (значение = индекс),
-`3` bool. GUI рисует контрол по типу; сейчас все параметры — float.
+`3` bool. GUI рисует контрол по типу.
+
+**Ноты (этап 3.0):** `NOTE_ON note vel` играет ноту на моно-голосе (высота = 12-TET, A4=69=440 Гц),
+`NOTE_OFF note` гасит её. Реальную высоту дают ноты; отладочный тон включается параметром
+`test_tone` (bool, деф. 1 — звучит с загрузки, перебивает ноты; `SET test_tone 0` → играют ноты).
 
 **Коды ошибок** (`ERR`): `1` неизвестная команда, `2` неверный id, `3` неверная длина тела.
 
@@ -58,7 +62,8 @@ LIST:           55 AA 01 03 <crc>
   ← PARAM #0:   55 AA 22 82 0000 00 <min f32> <max f32> <def f32> <cur f32> 0D "master_volume" <crc>
   ← PARAM #1:   55 AA 21 82 0100 00 ... 0C "test_tone_hz" <crc>
   ← PARAM #2:   55 AA 1D 82 0200 02 ... 08 "waveform" <crc>   (type 02 = enum, 0..3)
-  ← LISTEND:    55 AA 03 83 0300 <crc>
+  ← PARAM #3:   55 AA 1E 82 0300 03 ... 09 "test_tone" <crc>  (type 03 = bool, 0/1)
+  ← LISTEND:    55 AA 03 83 0400 <crc>
 
 GET master_volume (id 0):   55 AA 03 02 0000 <crc>
   ← VALUE 0.8:              55 AA 07 81 0000 CDCC4C3F <crc>
@@ -78,8 +83,9 @@ STAT:                       55 AA 01 06 <crc>
 python tools/serialtest.py COM8      # порт нативного USB S3 (не CH343-мост)
 ```
 
-Скрипт делает LIST → GET → SET → STAT → NOTE_ON → свип `waveform`/`test_tone_hz` и печатает
-декодированные ответы. Ожидаемо: список из трёх параметров (`master_volume`, `test_tone_hz`,
-`waveform`), `master_volume` клампится, STAT показывает heap/uptime + `cpu_permille` (‰ бюджета
-аудио-блока) и `underruns`, NOTE_ON → ACK, смена `waveform` слышна/видна на осциллографе. Строки
-`ESP_LOG` в потоке — норма, скрипт их пропускает (не проходят CRC).
+Скрипт делает LIST → STAT → выключает `test_tone` → играет ноты (три октавы A, затем высокая
+пила/меандр) и печатает декодированные ответы. Ожидаемо: список из **четырёх** параметров
+(`master_volume`, `test_tone_hz`, `waveform`, `test_tone`), STAT показывает heap/uptime +
+`cpu_permille` (‰ бюджета аудио-блока) и `underruns`, ноты меняют высоту, высокие ноты пилой/
+меандром звучат чисто (band-limit, без алиасинга). Строки `ESP_LOG` в потоке — норма, скрипт их
+пропускает (не проходят CRC).

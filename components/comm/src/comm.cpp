@@ -46,11 +46,12 @@ static void comm_task(void *arg)
                 continue;
             }
 
-            // Ноты пока некуда играть (синтезатор — этап 3), но лог полезен при отладке.
+            // Ноты → моно-голос на Core 0 через очередь (этап 3.0). Диспетчер ниже ещё вернёт
+            // ACK; здесь только прокидываем событие в аудио (напрямую в audio, не в DSP-цикл).
             if (blen >= 3 && body[0] == CMD_NOTE_ON) {
-                ESP_LOGI(TAG, "NOTE_ON n=%u vel=%u (в голоса — этап 3)", body[1], body[2]);
+                audio_note_on(body[1], body[2]);
             } else if (blen >= 2 && body[0] == CMD_NOTE_OFF) {
-                ESP_LOGI(TAG, "NOTE_OFF n=%u", body[1]);
+                audio_note_off(body[1]);
             }
 
             uint32_t cpu = 0, underruns = 0;
