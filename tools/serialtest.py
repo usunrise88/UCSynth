@@ -90,8 +90,8 @@ def show(frame: bytes):
     elif op == LISTEND:
         print(f"  LISTEND count={struct.unpack_from('<H', frame, 1)[0]}")
     elif op == R_STAT:
-        heap, mn, up = struct.unpack_from("<III", frame, 1)
-        print(f"  STAT heap={heap} minheap={mn} uptime_ms={up}")
+        heap, mn, up, cpu, ur = struct.unpack_from("<IIIII", frame, 1)
+        print(f"  STAT heap={heap} minheap={mn} uptime_ms={up} cpu={cpu/10:.1f}% underruns={ur}")
     elif op == ACK:
         print("  ACK")
     elif op == ERR:

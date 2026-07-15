@@ -15,6 +15,10 @@ void audio_init(void);
 #define AUDIO_SCOPE_LEN 128
 void audio_scope_read(int8_t *out);
 
+// Метрики аудио-задачи (этап 1.2): cpu_permille — загрузка в ‰ бюджета блока (1000 = впритык
+// к realtime); underruns — число блоков, не уложившихся в бюджет (прокси underrun). NULL ок.
+void audio_get_stats(uint32_t *cpu_permille, uint32_t *underruns);
+
 #ifdef __cplusplus
 }
 #endif

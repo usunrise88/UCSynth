@@ -92,10 +92,11 @@ int main() {
 
     // --- STAT ---
     {
-        sys_stats_t st = { 12345, 6789, 42 };
+        sys_stats_t st = { 12345, 6789, 42, 500, 3 };
         auto s = run({ CMD_STAT }, &st);
         auto &f = s.frames[0];
-        CHECK(f[0] == RSP_STAT && u32(&f[1]) == 12345 && u32(&f[5]) == 6789 && u32(&f[9]) == 42, "STAT поля");
+        CHECK(f[0] == RSP_STAT && u32(&f[1]) == 12345 && u32(&f[5]) == 6789 && u32(&f[9]) == 42
+              && u32(&f[13]) == 500 && u32(&f[17]) == 3, "STAT поля");
     }
 
     // --- NOTE_ON -> ACK ---

@@ -56,6 +56,14 @@ static void draw_scope(Canvas &c)
         prev_y = y;
     }
 
+    // Метрики (этап 1.2): загрузка аудио-задачи + late-блоки.
+    uint32_t cpu = 0, ur = 0;
+    audio_get_stats(&cpu, &ur);
+    char m[24];
+    snprintf(m, sizeof(m), "cpu %u.%u%%  ur %u",
+             (unsigned)(cpu / 10), (unsigned)(cpu % 10), (unsigned)ur);
+    gfx_text(c, 2, 46, m, 1, true);
+
     // Level bar снизу: master_volume 0..1.
     const float vol = get_param(PARAM_MASTER_VOLUME);
     const int bw = (int)(vol * 122.0f + 0.5f);

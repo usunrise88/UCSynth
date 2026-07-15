@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <cmath>
 #include <cstdint>
@@ -35,6 +36,11 @@ static i2s_chan_handle_t s_tx = nullptr;
 static int8_t s_scope[2][AUDIO_SCOPE_LEN];
 static std::atomic<int> s_scope_ready{0};
 
+// Метрики аудио-задачи (этап 1.2). Пишет Core 0, читают STAT/дисплей (Core 1).
+static constexpr uint32_t BLOCK_US = (uint32_t)(1000000ULL * BLOCK_FRAMES / SAMPLE_RATE);
+static std::atomic<uint32_t> s_cpu_permille{0};   // ‰ бюджета блока (EMA)
+static std::atomic<uint32_t> s_late_blocks{0};    // блоки, не уложившиеся в realtime
+
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
 // DMA-буфер занят). Так задача сама тактируется скоростью вывода — без vTaskDelay/тика.
 static void audio_task(void *arg)
@@ -53,6 +59,8 @@ static void audio_task(void *arg)
     float fade = 0.0f;
 
     for (;;) {
+        const int64_t t_start = esp_timer_get_time();
+
         // control-rate: параметры читаем раз в блок, не на каждый семпл.
         const float   freq      = get_param(PARAM_TEST_TONE_HZ);
         const float   vol       = get_param(PARAM_MASTER_VOLUME);
@@ -80,6 +88,13 @@ static void audio_task(void *arg)
             }
         }
 
+        // Метрики: время генерации блока против бюджета realtime (этап 1.2).
+        const uint32_t gen_us   = (uint32_t)(esp_timer_get_time() - t_start);
+        const uint32_t permille = gen_us * 1000u / BLOCK_US;
+        s_cpu_permille.store((s_cpu_permille.load(std::memory_order_relaxed) * 7 + permille) / 8,
+                             std::memory_order_relaxed);
+        if (gen_us > BLOCK_US) s_late_blocks.fetch_add(1, std::memory_order_relaxed);
+
         size_t written = 0;
         i2s_channel_write(s_tx, block, sizeof(block), &written, portMAX_DELAY);
     }
@@ -89,6 +104,12 @@ void audio_scope_read(int8_t *out)
 {
     const int r = s_scope_ready.load(std::memory_order_acquire);
     for (int i = 0; i < AUDIO_SCOPE_LEN; ++i) out[i] = s_scope[r][i];
+}
+
+void audio_get_stats(uint32_t *cpu_permille, uint32_t *underruns)
+{
+    if (cpu_permille) *cpu_permille = s_cpu_permille.load(std::memory_order_relaxed);
+    if (underruns)    *underruns    = s_late_blocks.load(std::memory_order_relaxed);
 }
 
 void audio_init(void)
