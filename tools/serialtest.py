@@ -115,7 +115,16 @@ def drain(ser, dec, seconds=0.3):
 def main():
     if len(sys.argv) < 2:
         sys.exit("Использование: python serialtest.py <PORT>   (напр. COM8 или /dev/ttyACM0)")
-    ser = serial.Serial(sys.argv[1], 115200, timeout=0.1)   # baud для USB-JTAG не важен
+    # Нативный USB-Serial-JTAG S3 использует RTS как линию сброса (EN) — тем же механизмом
+    # esptool перезагружает плату по USB. По умолчанию pyserial дёргает RTS при открытии/закрытии
+    # порта → чип ресетится в конце скрипта. Держим RTS сброшенным: сброса не будет, на данные
+    # (bulk-endpoints CDC) это не влияет.
+    ser = serial.Serial()
+    ser.port = sys.argv[1]
+    ser.baudrate = 115200        # для USB-JTAG не важен
+    ser.timeout = 0.1
+    ser.rts = False
+    ser.open()
     dec = Decoder()
     time.sleep(0.2)
     ser.reset_input_buffer()
