@@ -129,28 +129,57 @@ def main():
     time.sleep(0.2)
     ser.reset_input_buffer()
 
-    steps = [
-        ("LIST",                    encode(bytes([LIST]))),
-        ("GET master_volume",       encode(bytes([GET]) + struct.pack("<H", 0))),
-        ("SET master_volume = 0.5", encode(bytes([SET]) + struct.pack("<Hf", 0, 0.5))),
-        ("GET master_volume",       encode(bytes([GET]) + struct.pack("<H", 0))),
-        ("SET master_volume = 9 (ждём кламп 1.0)", encode(bytes([SET]) + struct.pack("<Hf", 0, 9.0))),
-        ("STAT",                    encode(bytes([STAT]))),
-        ("NOTE_ON 60 100",          encode(bytes([NOTE_ON, 60, 100]))),
-        ("SET test_tone_hz = 220 (октава вниз)", encode(bytes([SET]) + struct.pack("<Hf", 1, 220.0))),
-        ("SET waveform = 1 (saw)",    encode(bytes([SET]) + struct.pack("<Hf", 2, 1.0))),
-        ("SET waveform = 2 (square)", encode(bytes([SET]) + struct.pack("<Hf", 2, 2.0))),
-        ("SET waveform = 3 (tri)",    encode(bytes([SET]) + struct.pack("<Hf", 2, 3.0))),
-        ("SET waveform = 0 (sine)",   encode(bytes([SET]) + struct.pack("<Hf", 2, 0.0))),
-        ("SET test_tone_hz = 440 (вернуть)", encode(bytes([SET]) + struct.pack("<Hf", 1, 440.0))),
-        ("SET master_volume = 0.8 (вернуть дефолт)", encode(bytes([SET]) + struct.pack("<Hf", 0, 0.8))),
-    ]
-    for i, (title, frame) in enumerate(steps):
+    # id параметров (стабильные, см. control.h). LIST даёт их динамически — тут для удобства.
+    PID_VOL, PID_HZ, PID_WAVE, PID_TEST = 0, 1, 2, 3
+
+    def setp(pid, val):
+        return encode(bytes([SET]) + struct.pack("<Hf", pid, val))
+
+    def step(title, frame, pause=2.0):
+        """Команда + дренаж ответа + пауза (успеть глянуть на экран / послушать)."""
         print(f"{title}:")
         ser.write(frame)
         drain(ser, dec)
-        if i < len(steps) - 1:
-            time.sleep(2.0)   # пауза между сменами — успеть глянуть на экран / послушать
+        time.sleep(pause)
+
+    def play(title, note, hold=1.3, vel=100):
+        """Сыграть ноту: NOTE_ON → держим hold с → NOTE_OFF. Голос моно (этап 3.0)."""
+        print(f"{title}:")
+        ser.write(encode(bytes([NOTE_ON, note, vel])))
+        drain(ser, dec)
+        time.sleep(hold)
+        ser.write(encode(bytes([NOTE_OFF, note])))
+        drain(ser, dec, 0.2)
+        time.sleep(0.6)
+
+    step("LIST (реестр — теперь 4 параметра, добавился test_tone)", encode(bytes([LIST])))
+    step("STAT", encode(bytes([STAT])))
+
+    # Тест-тон по умолчанию ВКЛ — тон звучит с загрузки (проверка тракта). Гасим → играют ноты.
+    step("SET test_tone = 0 (тест-тон выкл → играют ноты NOTE_ON/OFF)", setp(PID_TEST, 0.0))
+    step("SET waveform = 0 (sine)", setp(PID_WAVE, 0.0))
+
+    # Три октавы A — слышно, что нота задаёт высоту (220 / 440 / 880 Гц).
+    play("NOTE A3 (57 ≈ 220 Гц)", 57)
+    play("NOTE A4 (69 = 440 Гц)", 69)
+    play("NOTE A5 (81 ≈ 880 Гц)", 81)
+
+    # Пила: низкая и ВЫСОКАЯ нота — на верхах band-limit убирает алиасинг (наивная пила «звенела» бы).
+    step("SET waveform = 1 (saw)", setp(PID_WAVE, 1.0))
+    play("NOTE C4 (60 ≈ 262 Гц) пилой", 60)
+    play("NOTE C7 (96 ≈ 2093 Гц) пилой — band-limit: чисто, без алиасинга", 96)
+
+    # Меандр на верхах — та же проверка.
+    step("SET waveform = 2 (square)", setp(PID_WAVE, 2.0))
+    play("NOTE C6 (84 ≈ 1047 Гц) меандром", 84)
+
+    step("SET waveform = 0 (sine, вернуть)", setp(PID_WAVE, 0.0))
+    step("STAT (после игры — cpu/underruns)", encode(bytes([STAT])))
+
+    # Вернуть отладочный тест-тон и дефолты.
+    step("SET test_tone = 1 (тест-тон вернуть)", setp(PID_TEST, 1.0))
+    step("SET test_tone_hz = 440", setp(PID_HZ, 440.0))
+    step("SET master_volume = 0.8", setp(PID_VOL, 0.8), pause=0.3)
     ser.close()
 
 

@@ -1,6 +1,7 @@
 // audio — аудио-тракт на Core 0: I2S std TX → PCM5102 (GY-PCM5102).
-// Этап 1.1: чистый синус (test_tone_hz × master_volume) для проверки железа тракта.
-// Плюс scope-буфер: снимок формы волны для осциллографа на дисплее (Core 1).
+// Этап 3.0: моно-голос, управляемый нотами (NOTE_ON/OFF из comm через FreeRTOS-очередь),
+// band-limited wavetable (октавные mip-таблицы, без алиасинга на верхах). Отладочный тест-тон
+// (test_tone) перебивает ноты для проверки тракта. Плюс scope-буфер для осциллографа на дисплее.
 // Параметры читаются ТОЛЬКО через control (get_param) — напрямую в DSP никогда.
 // Железо и распиновка: docs/hardware-stage1-pcm5102.md.
 #include "audio.h"
@@ -11,6 +12,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -41,6 +43,22 @@ static constexpr uint32_t BLOCK_US = (uint32_t)(1000000ULL * BLOCK_FRAMES / SAMP
 static std::atomic<uint32_t> s_cpu_permille{0};   // ‰ бюджета блока (EMA)
 static std::atomic<uint32_t> s_late_blocks{0};    // блоки, не уложившиеся в realtime
 
+// Нотный путь Core 1 → Core 0 (этап 3.0). comm кладёт события в очередь, аудио-задача дренит
+// её в начале блока. Состояние голоса (нота/gate/фаза) живёт ТОЛЬКО в аудио-задаче (Core 0) —
+// очередь и есть точка передачи, атомики для голоса не нужны.
+struct NoteEvent {
+    uint8_t on;     // 1 = note-on, 0 = note-off
+    uint8_t note;   // MIDI-номер
+    uint8_t vel;    // velocity (в 3.0 не используется; задел под VCA 3.1)
+};
+static QueueHandle_t s_note_q = nullptr;
+
+// MIDI-нота → частота (12-TET, A4=69=440 Гц). Зовём на событие ноты (control-rate), powf ок.
+static inline float note_to_hz(uint8_t note)
+{
+    return 440.0f * powf(2.0f, ((int)note - 69) * (1.0f / 12.0f));
+}
+
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
 // DMA-буфер занят). Так задача сама тактируется скоростью вывода — без vTaskDelay/тика.
 static void audio_task(void *arg)
@@ -48,30 +66,53 @@ static void audio_task(void *arg)
     (void)arg;
 
     int16_t block[BLOCK_FRAMES * 2];   // STEREO-слот: L и R одинаковые (mono → оба канала)
-    float phase = 0.0f;                // [0,1), живёт только здесь (Core 0) — без атомиков
+
+    // Состояние моно-голоса — только здесь (Core 0), без атомиков.
+    float   phase    = 0.0f;           // [0,1), фаза свободнобегущая (без ресета на ноте → без щелчка)
+    float   note_hz  = 440.0f;         // частота текущей ноты
+    bool    gate     = false;          // нота удерживается?
+    uint8_t cur_note = 255;            // какая нота звучит (моно: note-off гасит только её)
+    float   amp      = 0.0f;           // сглаженная амплитуда голоса (анти-клик; ADSR — этап 3.1)
 
     // Осциллограф: пишем форму (до громкости) в НЕактивный буфер, по заполнении окна — флип.
     int scope_wr  = 1 - s_scope_ready.load(std::memory_order_relaxed);
     int scope_pos = 0;
 
-    // Антипоп: плавный fade-in ~8 мс (XSMT статически на 3.3В, программно им не управляем).
-    const float fade_step = 1.0f / (0.008f * SAMPLE_RATE);
-    float fade = 0.0f;
+    // Анти-клик: линейная рампа amp к цели за ~5 мс (замена ADSR на 3.0; XSMT статически на 3.3В).
+    const float amp_step = 1.0f / (0.005f * SAMPLE_RATE);
 
     for (;;) {
         const int64_t t_start = esp_timer_get_time();
 
+        // Дренаж нотной очереди в начале блока: моно, последняя нота приоритетна (ретригер).
+        NoteEvent ev;
+        while (xQueueReceive(s_note_q, &ev, 0) == pdTRUE) {
+            if (ev.on) {
+                cur_note = ev.note;
+                note_hz  = note_to_hz(ev.note);
+                gate     = true;
+            } else if (ev.note == cur_note) {
+                gate = false;              // гасим только текущую (устаревший off чужой ноты игнор)
+            }
+        }
+
         // control-rate: параметры читаем раз в блок, не на каждый семпл.
-        const float   freq      = get_param(PARAM_TEST_TONE_HZ);
-        const float   vol       = get_param(PARAM_MASTER_VOLUME);
-        const uint8_t wave      = (uint8_t)get_param(PARAM_WAVEFORM);
-        const float   phase_inc = freq / (float)SAMPLE_RATE;   // оборотов на семпл
+        const float   vol     = get_param(PARAM_MASTER_VOLUME);
+        const uint8_t wave    = (uint8_t)get_param(PARAM_WAVEFORM);
+        const bool    test_on = get_param(PARAM_TEST_TONE) > 0.5f;
+
+        // Тест-тон (отладка тракта) перебивает ноты: играет непрерывно на test_tone_hz.
+        const float freq       = test_on ? get_param(PARAM_TEST_TONE_HZ) : note_hz;
+        const float amp_target = (test_on || gate) ? 1.0f : 0.0f;
+        const int   mip        = wavetable_mip(freq);          // выбор mip — раз в блок, без log2 в цикле
+        const float phase_inc  = freq / (float)SAMPLE_RATE;    // оборотов на семпл
 
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
-            if (fade < 1.0f) { fade += fade_step; if (fade > 1.0f) fade = 1.0f; }
+            if (amp < amp_target)      { amp += amp_step; if (amp > amp_target) amp = amp_target; }
+            else if (amp > amp_target) { amp -= amp_step; if (amp < amp_target) amp = amp_target; }
 
-            const float s0 = wavetable_sample(wave, phase);   // форма волны [-1,1]
-            const float s  = s0 * vol * fade;        // на выход (с громкостью)
+            const float s0 = wavetable_sample(wave, phase, mip);   // band-limited форма [-1,1]
+            const float s  = s0 * amp * vol;                       // на выход (амплитуда × громкость)
             phase += phase_inc;
             if (phase >= 1.0f) phase -= 1.0f;
 
@@ -98,6 +139,20 @@ static void audio_task(void *arg)
         size_t written = 0;
         i2s_channel_write(s_tx, block, sizeof(block), &written, portMAX_DELAY);
     }
+}
+
+void audio_note_on(uint8_t note, uint8_t vel)
+{
+    if (!s_note_q) return;
+    const NoteEvent ev = { 1, note, vel };
+    xQueueSend(s_note_q, &ev, 0);   // не блокируемся (зовут с Core 1); переполнение → событие теряется
+}
+
+void audio_note_off(uint8_t note)
+{
+    if (!s_note_q) return;
+    const NoteEvent ev = { 0, note, 0 };
+    xQueueSend(s_note_q, &ev, 0);
 }
 
 void audio_scope_read(int8_t *out)
@@ -140,12 +195,15 @@ void audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
 
-    // Таблицы форм волн (генерятся в RAM один раз) — до старта задачи.
-    wavetable_init();
+    // Band-limited wavetable-таблицы (октавные mip) под нашу частоту — до старта задачи.
+    wavetable_init((float)SAMPLE_RATE);
+
+    // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).
+    s_note_q = xQueueCreate(32, sizeof(NoteEvent));
 
     // 3) Аудио-задача на Core 0 (Core 1 отдан comm/UI). Приоритет выше comm(5): звук важнее.
     xTaskCreatePinnedToCore(audio_task, "audio", 4096, nullptr, 10, nullptr, 0);
 
-    ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — синус (этап 1.1)",
+    ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — моно-голос + band-limited wt (3.0)",
              (unsigned)SAMPLE_RATE, (int)PIN_BCK, (int)PIN_WS, (int)PIN_DIN);
 }

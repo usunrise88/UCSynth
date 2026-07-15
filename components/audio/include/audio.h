@@ -10,6 +10,13 @@ extern "C" {
 
 void audio_init(void);
 
+// Нотный путь Core 1 → Core 0 (этап 3.0). comm (Core 1) на NOTE_ON/OFF зовёт эти функции;
+// событие кладётся в FreeRTOS-очередь, аудио-задача (Core 0) дренит её в начале блока и
+// аллоцирует/освобождает голос. Не блокируются: при переполнении очереди событие теряется.
+// note — MIDI-номер (0..127, A4=69=440 Гц), vel — velocity (0..127, задел под VCA этапа 3.1).
+void audio_note_on(uint8_t note, uint8_t vel);
+void audio_note_off(uint8_t note);
+
 // Осциллограф для дисплея: снимок формы волны осциллятора (ДО master_volume), int8 [-127..127].
 // Писатель — аудио-задача (Core 0), читатель — дисплей (Core 1). out вмещает AUDIO_SCOPE_LEN.
 #define AUDIO_SCOPE_LEN 128
