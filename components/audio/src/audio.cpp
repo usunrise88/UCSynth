@@ -1,5 +1,6 @@
 // audio — аудио-тракт на Core 0: I2S std TX → PCM5102 (GY-PCM5102).
 // Этап 1.1: чистый синус (test_tone_hz × master_volume) для проверки железа тракта.
+// Плюс scope-буфер: снимок формы волны для осциллографа на дисплее (Core 1).
 // Параметры читаются ТОЛЬКО через control (get_param) — напрямую в DSP никогда.
 // Железо и распиновка: docs/hardware-stage1-pcm5102.md.
 #include "audio.h"
@@ -13,6 +14,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <atomic>
 
 static const char *TAG = "audio";
 
@@ -27,6 +29,11 @@ static constexpr gpio_num_t PIN_DIN = GPIO_NUM_7;   // data (S3 → модуль
 
 static i2s_chan_handle_t s_tx = nullptr;
 
+// Осциллограф: двойной буфер снимков формы. Core 0 пишет, Core 1 читает. Без блокировок и
+// практически без тиринга: читатель копирует за микросекунды, писатель флипает раз в ~2.7 мс.
+static int8_t s_scope[2][AUDIO_SCOPE_LEN];
+static std::atomic<int> s_scope_ready{0};
+
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
 // DMA-буфер занят). Так задача сама тактируется скоростью вывода — без vTaskDelay/тика.
 static void audio_task(void *arg)
@@ -36,6 +43,10 @@ static void audio_task(void *arg)
 
     int16_t block[BLOCK_FRAMES * 2];   // STEREO-слот: L и R одинаковые (mono → оба канала)
     float phase = 0.0f;                // [0,1), живёт только здесь (Core 0) — без атомиков
+
+    // Осциллограф: пишем форму (до громкости) в НЕактивный буфер, по заполнении окна — флип.
+    int scope_wr  = 1 - s_scope_ready.load(std::memory_order_relaxed);
+    int scope_pos = 0;
 
     // Антипоп: плавный fade-in ~8 мс (XSMT статически на 3.3В, программно им не управляем).
     const float fade_step = 1.0f / (0.008f * SAMPLE_RATE);
@@ -50,18 +61,33 @@ static void audio_task(void *arg)
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             if (fade < 1.0f) { fade += fade_step; if (fade > 1.0f) fade = 1.0f; }
 
-            const float s = sinf(kTwoPi * phase) * vol * fade;
+            const float s0 = sinf(kTwoPi * phase);   // форма волны [-1,1] — для осциллографа
+            const float s  = s0 * vol * fade;        // на выход (с громкостью)
             phase += phase_inc;
             if (phase >= 1.0f) phase -= 1.0f;
 
             const int16_t v = (int16_t)lrintf(s * 32767.0f);
             block[2 * i]     = v;   // L
             block[2 * i + 1] = v;   // R
+
+            // Снимок формы для дисплея; по заполнении окна публикуем буфер (release).
+            s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(s0 * 127.0f);
+            if (scope_pos >= AUDIO_SCOPE_LEN) {
+                s_scope_ready.store(scope_wr, std::memory_order_release);
+                scope_wr ^= 1;
+                scope_pos = 0;
+            }
         }
 
         size_t written = 0;
         i2s_channel_write(s_tx, block, sizeof(block), &written, portMAX_DELAY);
     }
+}
+
+void audio_scope_read(int8_t *out)
+{
+    const int r = s_scope_ready.load(std::memory_order_acquire);
+    for (int i = 0; i < AUDIO_SCOPE_LEN; ++i) out[i] = s_scope[r][i];
 }
 
 void audio_init(void)

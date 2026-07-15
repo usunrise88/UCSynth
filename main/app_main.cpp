@@ -19,6 +19,7 @@
 #include "audio.h"
 #include "comm.h"
 #include "control.h"
+#include "display.h"
 #include "io.h"
 
 static const char *TAG = "ucsynth";
@@ -64,6 +65,7 @@ extern "C" void app_main(void)
     comm_init();     // протокол Serial / USB CDC     (этап 0.3)
     io_init();       // периферия: I2C, энкодеры, тач (этап 8+)
     audio_init();    // I2S + DMA + DSP на Core 0     (этап 1)
+    display_init();  // отладочный OLED SSD1306 на Core 1 (вне спеки, до ST7796)
 
     ESP_LOGI(TAG, "boot complete");
 
