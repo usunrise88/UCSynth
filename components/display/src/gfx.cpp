@@ -101,56 +101,42 @@ static const uint8_t FONT5X7[95][5] = {
     {0x08,0x04,0x08,0x10,0x08}, // ~
 };
 
-// Bayer 8×8 (0..63) — порог упорядоченного дизеринга.
-static const uint8_t BAYER8[8][8] = {
-    { 0,32, 8,40, 2,34,10,42},
-    {48,16,56,24,50,18,58,26},
-    {12,44, 4,36,14,46, 6,38},
-    {60,28,52,20,62,30,54,22},
-    { 3,35,11,43, 1,33, 9,41},
-    {51,19,59,27,49,17,57,25},
-    {15,47, 7,39,13,45, 5,37},
-    {63,31,55,23,61,29,53,21},
-};
+void fb_clear(uint8_t *fb) { memset(fb, 0, SSD1306_FB_SIZE); }
 
-void g_clear(GrayCanvas &g) { memset(g.px, 0, sizeof(g.px)); }
-
-void g_dim(GrayCanvas &g, uint16_t num, uint16_t den)
-{
-    if (!den) return;
-    for (int i = 0; i < SSD1306_W * SSD1306_H; ++i)
-        g.px[i] = (uint8_t)((uint16_t)g.px[i] * num / den);
-}
-
-void g_pixel(GrayCanvas &g, int x, int y, uint8_t v)
+void fb_pixel(uint8_t *fb, int x, int y, bool on)
 {
     if (x < 0 || x >= SSD1306_W || y < 0 || y >= SSD1306_H) return;
-    uint8_t &p = g.px[y * SSD1306_W + x];
-    if (v > p) p = v;
+    const int idx = x + (y >> 3) * SSD1306_W;
+    const uint8_t bit = (uint8_t)(1u << (y & 7));
+    if (on) fb[idx] |= bit; else fb[idx] &= (uint8_t)~bit;
 }
 
-void g_hline(GrayCanvas &g, int x0, int x1, int y, uint8_t v)
+void fb_hline(uint8_t *fb, int x0, int x1, int y, bool on)
 {
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
-    for (int x = x0; x <= x1; ++x) g_pixel(g, x, y, v);
+    for (int x = x0; x <= x1; ++x) fb_pixel(fb, x, y, on);
 }
 
-void g_rect(GrayCanvas &g, int x, int y, int w, int h, uint8_t v)
+void fb_vline(uint8_t *fb, int x, int y0, int y1, bool on)
 {
-    for (int i = 0; i < w; ++i) { g_pixel(g, x + i, y, v); g_pixel(g, x + i, y + h - 1, v); }
-    for (int j = 0; j < h; ++j) { g_pixel(g, x, y + j, v); g_pixel(g, x + w - 1, y + j, v); }
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
+    for (int y = y0; y <= y1; ++y) fb_pixel(fb, x, y, on);
 }
 
-void g_fill_rect(GrayCanvas &g, int x, int y, int w, int h, uint8_t v)
+void fb_rect(uint8_t *fb, int x, int y, int w, int h, bool on)
 {
-    for (int j = 0; j < h; ++j)
-        for (int i = 0; i < w; ++i) {
-            if (x + i < 0 || x + i >= SSD1306_W || y + j < 0 || y + j >= SSD1306_H) continue;
-            g.px[(y + j) * SSD1306_W + (x + i)] = v;   // fill: присваиваем (можно и очистить в 0)
-        }
+    fb_hline(fb, x, x + w - 1, y, on);
+    fb_hline(fb, x, x + w - 1, y + h - 1, on);
+    fb_vline(fb, x, y, y + h - 1, on);
+    fb_vline(fb, x + w - 1, y, y + h - 1, on);
 }
 
-void g_line(GrayCanvas &g, int x0, int y0, int x1, int y1, uint8_t v)
+void fb_fill_rect(uint8_t *fb, int x, int y, int w, int h, bool on)
+{
+    for (int j = 0; j < h; ++j) fb_hline(fb, x, x + w - 1, y + j, on);
+}
+
+void fb_line(uint8_t *fb, int x0, int y0, int x1, int y1, bool on)
 {
     int dx = x1 - x0, dy = y1 - y0;
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
@@ -158,7 +144,7 @@ void g_line(GrayCanvas &g, int x0, int y0, int x1, int y1, uint8_t v)
     dy = dy < 0 ? -dy : dy;
     int err = dx - dy;
     for (;;) {
-        g_pixel(g, x0, y0, v);
+        fb_pixel(fb, x0, y0, on);
         if (x0 == x1 && y0 == y1) break;
         int e2 = 2 * err;
         if (e2 > -dy) { err -= dy; x0 += sx; }
@@ -166,7 +152,7 @@ void g_line(GrayCanvas &g, int x0, int y0, int x1, int y1, uint8_t v)
     }
 }
 
-void g_text(GrayCanvas &g, int x, int y, const char *s, int scale, uint8_t v)
+void fb_text(uint8_t *fb, int x, int y, const char *s, int scale, bool on)
 {
     if (scale < 1) scale = 1;
     for (int ci = 0; s[ci]; ++ci) {
@@ -178,30 +164,16 @@ void g_text(GrayCanvas &g, int x, int y, const char *s, int scale, uint8_t v)
             const uint8_t bits = glyph[col];
             for (int row = 0; row < 7; ++row) {
                 if (bits & (1u << row)) {
-                    for (int dy = 0; dy < scale; ++dy)
-                        for (int dx = 0; dx < scale; ++dx)
-                            g_pixel(g, cx + col * scale + dx, y + row * scale + dy, v);
+                    if (scale == 1) fb_pixel(fb, cx + col, y + row, on);
+                    else fb_fill_rect(fb, cx + col * scale, y + row * scale, scale, scale, on);
                 }
             }
         }
     }
 }
 
-int g_text_width(const char *s, int scale)
+int fb_text_width(const char *s, int scale)
 {
     if (scale < 1) scale = 1;
     return (int)strlen(s) * 6 * scale;
-}
-
-void g_dither(const GrayCanvas &g, uint8_t *fb, uint16_t fade_num, uint16_t fade_den)
-{
-    memset(fb, 0, SSD1306_FB_SIZE);
-    for (int y = 0; y < SSD1306_H; ++y) {
-        for (int x = 0; x < SSD1306_W; ++x) {
-            uint16_t v = g.px[y * SSD1306_W + x];
-            if (fade_den) v = (uint16_t)(v * fade_num / fade_den);
-            const uint8_t thr = (uint8_t)(BAYER8[y & 7][x & 7] * 4 + 2);   // 0..63 → ~2..254
-            if (v > thr) fb[x + (y >> 3) * SSD1306_W] |= (uint8_t)(1u << (y & 7));
-        }
-    }
 }

@@ -1,7 +1,7 @@
-// display — рендер отладочного OLED на Core 1 (beauty-pass).
-// Grayscale intensity-буфер → Bayer-дизеринг. Splash с фейдом → визуализатор: осциллограф с
-// послесвечением (phosphor) + статус + метрики + level bar. Поверх — param-popup при смене
-// параметра (детекция изменений на стороне дисплея — control/lock-free не трогаем).
+// display — рендер отладочного OLED на Core 1. Чёткий 1-бит (после фидбэка с железа: дизеринг/
+// послесвечение давали кашу). Splash → визуализатор: осциллограф (крисп линия) + статус +
+// метрики + level bar. Поверх — param-popup при смене параметра (детекция на стороне дисплея,
+// сравнение снимков — control/lock-free не трогаем).
 #include "display.h"
 #include "ssd1306.h"
 #include "gfx.h"
@@ -23,81 +23,65 @@ static constexpr gpio_num_t PIN_SDA   = GPIO_NUM_8;
 static constexpr gpio_num_t PIN_SCL   = GPIO_NUM_9;
 static constexpr uint8_t    OLED_ADDR = 0x3C;
 
-static constexpr int64_t SPLASH_US = 2000000;   // длительность splash
-static constexpr int64_t FADE_US   = 400000;    // фейд splash in/out
+static constexpr int64_t SPLASH_US = 2000000;   // показ splash
 static constexpr int64_t POPUP_US  = 1000000;   // показ значения параметра (1 с)
 
 static const char *kWave[] = {"sine", "saw", "square", "tri"};
 
-// ——— splash ———
-static void draw_splash(GrayCanvas &g)
+static void draw_splash(uint8_t *fb)
 {
-    g_clear(g);
-    g_rect(g, 4, 4, SSD1306_W - 8, SSD1306_H - 8, 170);
-    g_text(g, (SSD1306_W - g_text_width("UCSynth", 2)) / 2, 14, "UCSynth", 2, 255);
-    g_text(g, (SSD1306_W - g_text_width("unnecessary", 1)) / 2, 38, "unnecessary", 1, 190);
-    g_text(g, (SSD1306_W - g_text_width("complicated", 1)) / 2, 48, "complicated", 1, 190);
+    fb_clear(fb);
+    fb_rect(fb, 4, 4, SSD1306_W - 8, SSD1306_H - 8, true);
+    fb_text(fb, (SSD1306_W - fb_text_width("UCSynth", 2)) / 2, 14, "UCSynth", 2, true);
+    fb_text(fb, (SSD1306_W - fb_text_width("unnecessary", 1)) / 2, 38, "unnecessary", 1, true);
+    fb_text(fb, (SSD1306_W - fb_text_width("complicated", 1)) / 2, 48, "complicated", 1, true);
 }
 
-static uint16_t splash_fade(int64_t age)   // 0..256
+static void draw_scope(uint8_t *fb)
 {
-    if (age < FADE_US)              return (uint16_t)(256 * age / FADE_US);
-    if (age > SPLASH_US - FADE_US)  return (uint16_t)(256 * (SPLASH_US - age) / FADE_US);
-    return 256;
-}
-
-// ——— визуализатор: осциллограф с послесвечением ———
-static void draw_scope(GrayCanvas &g)
-{
-    // Послесвечение: гасим кадр, крисп-элементы рисуем заново на полную, а старый след
-    // осциллографа не перерисовываем → он затухает (phosphor decay).
-    g_dim(g, 150, 256);
+    fb_clear(fb);
 
     char line[24];
     const float freq = get_param(PARAM_TEST_TONE_HZ);
     const int   wf   = (int)get_param(PARAM_WAVEFORM);
     snprintf(line, sizeof(line), "%d Hz  %s", (int)(freq + 0.5f), kWave[(wf < 0 || wf > 3) ? 0 : wf]);
-    g_text(g, 2, 0, line, 1, 255);
+    fb_text(fb, 2, 0, line, 1, true);
 
     uint32_t cpu = 0, ur = 0;
     audio_get_stats(&cpu, &ur);
     char m[24];
     snprintf(m, sizeof(m), "cpu %u.%u%%  ur %u",
              (unsigned)(cpu / 10), (unsigned)(cpu % 10), (unsigned)ur);
-    g_text(g, 2, 46, m, 1, 200);
+    fb_text(fb, 2, 46, m, 1, true);
 
-    // Осевая (пунктир).
-    const int top = 12, bot = 45, mid = (top + bot) / 2, amp = (bot - top) / 2;
-    for (int x = 0; x < SSD1306_W; x += 3) g_pixel(g, x, mid, 70);
-
-    // Новый след — на полную яркость.
+    // Осциллограф: крисп линия. Без осевой (сливалась со следом) и без послесвечения.
+    const int top = 10, bot = 44, mid = (top + bot) / 2, amp = (bot - top) / 2;
     int8_t scope[AUDIO_SCOPE_LEN];
     audio_scope_read(scope);
     int prev_y = mid - (scope[0] * amp) / 127;
     for (int x = 1; x < AUDIO_SCOPE_LEN; ++x) {
         const int y = mid - (scope[x] * amp) / 127;
-        g_line(g, x - 1, prev_y, x, y, 255);
+        fb_line(fb, x - 1, prev_y, x, y, true);
         prev_y = y;
     }
 
-    // Level bar (крисп).
+    // Level bar снизу: master_volume.
     const float vol = get_param(PARAM_MASTER_VOLUME);
     const int bw = (int)(vol * 120.0f + 0.5f);
-    g_rect(g, 2, 54, 124, 9, 190);
-    if (bw > 0) g_fill_rect(g, 4, 56, bw, 5, 255);
+    fb_rect(fb, 2, 54, 124, 9, true);
+    if (bw > 0) fb_fill_rect(fb, 4, 56, bw, 5, true);
 }
 
-// ——— popup значения параметра ———
-static void draw_popup(GrayCanvas &g, uint16_t pid)
+static void draw_popup(uint8_t *fb, uint16_t pid)
 {
     param_info_t info;
     if (!param_get_info(pid, &info)) return;
 
     const int bx = 6, by = 12, bw = SSD1306_W - 12, bh = 40;
-    g_fill_rect(g, bx, by, bw, bh, 0);         // чёрная подложка (читаемо)
-    g_rect(g, bx, by, bw, bh, 255);
+    fb_fill_rect(fb, bx, by, bw, bh, false);   // очистить область под попапом
+    fb_rect(fb, bx, by, bw, bh, true);
 
-    g_text(g, bx + 6, by + 5, info.name ? info.name : "?", 1, 220);
+    fb_text(fb, bx + 6, by + 5, info.name ? info.name : "?", 1, true);
 
     char val[16];
     if (pid == PARAM_WAVEFORM) {
@@ -111,22 +95,21 @@ static void draw_popup(GrayCanvas &g, uint16_t pid)
     } else {
         snprintf(val, sizeof(val), "%d", (int)(info.cur + 0.5f));
     }
-    g_text(g, bx + 6, by + 17, val, 2, 255);
+    fb_text(fb, bx + 6, by + 17, val, 2, true);
 
     if (info.max > info.min) {
         float frac = (info.cur - info.min) / (info.max - info.min);
         if (frac < 0) frac = 0; else if (frac > 1) frac = 1;
         const int fw = (int)(frac * (float)(bw - 12) + 0.5f);
-        g_rect(g, bx + 5, by + bh - 9, bw - 10, 5, 180);
-        if (fw > 0) g_fill_rect(g, bx + 6, by + bh - 8, fw, 3, 255);
+        fb_rect(fb, bx + 5, by + bh - 9, bw - 10, 5, true);
+        if (fw > 0) fb_fill_rect(fb, bx + 6, by + bh - 8, fw, 3, true);
     }
 }
 
 static void display_task(void *arg)
 {
     (void)arg;
-    static GrayCanvas g;                 // 8 КБ в BSS
-    static uint8_t    fb[SSD1306_FB_SIZE];
+    static uint8_t fb[SSD1306_FB_SIZE];
 
     float   prev[16];
     bool    prev_init = false;
@@ -138,7 +121,7 @@ static void display_task(void *arg)
     for (;;) {
         const int64_t now = esp_timer_get_time();
 
-        // Детекция смены параметра (для popup): снимок значений, сравнение с прошлым кадром.
+        // Детекция смены параметра для popup: снимок значений, сравнение с прошлым кадром.
         const uint16_t n = param_count();
         if (!prev_init) {
             for (uint16_t i = 0; i < n && i < 16; ++i) prev[i] = get_param(i);
@@ -151,12 +134,10 @@ static void display_task(void *arg)
         }
 
         if (now - boot < SPLASH_US) {
-            draw_splash(g);
-            g_dither(g, fb, splash_fade(now - boot), 256);
+            draw_splash(fb);
         } else {
-            draw_scope(g);
-            if (popup_id >= 0 && now - popup_t0 < POPUP_US) draw_popup(g, (uint16_t)popup_id);
-            g_dither(g, fb, 256, 256);
+            draw_scope(fb);
+            if (popup_id >= 0 && now - popup_t0 < POPUP_US) draw_popup(fb, (uint16_t)popup_id);
         }
         ssd1306_flush(fb);
         vTaskDelay(pdMS_TO_TICKS(33));   // ~30 fps
