@@ -16,3 +16,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT"
 
 "$OUT"
+
+# Тест wavetable (чистый DSP осциллятора: формы, интерполяция, диапазон).
+OUT2="$(mktemp -d)/wttest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_wavetable.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT2"
+
+"$OUT2"

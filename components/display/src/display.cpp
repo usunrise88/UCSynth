@@ -37,9 +37,11 @@ static void draw_scope(Canvas &c)
     gfx_clear(c);
 
     // Статус сверху: частота + форма (пока только синус).
+    static const char *kWave[] = {"sine", "saw", "square", "tri"};
     char line[24];
     const float freq = get_param(PARAM_TEST_TONE_HZ);
-    snprintf(line, sizeof(line), "%d Hz  sine", (int)(freq + 0.5f));
+    const int   wf   = (int)get_param(PARAM_WAVEFORM);
+    snprintf(line, sizeof(line), "%d Hz  %s", (int)(freq + 0.5f), kWave[(wf < 0 || wf > 3) ? 0 : wf]);
     gfx_text(c, 2, 0, line, 1, true);
 
     // Осциллограф: центральная зона, ось по центру (пунктир). scope 128 семплов = 128 px.

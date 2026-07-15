@@ -27,7 +27,8 @@ typedef enum {
 // дописывать в конец. Каждый будущий этап регистрирует свои параметры.
 typedef enum {
     PARAM_MASTER_VOLUME = 0,  // общая громкость, 0..1
-    PARAM_TEST_TONE_HZ  = 1,  // частота тест-синуса (этап 1.1), Гц
+    PARAM_TEST_TONE_HZ  = 1,  // частота осциллятора, Гц
+    PARAM_WAVEFORM      = 2,  // форма волны (enum): 0 sine, 1 saw, 2 square, 3 tri (этап 1.3)
     PARAM_COUNT
 } param_id_t;
 

@@ -23,6 +23,7 @@ struct ParamDef {
 constexpr ParamDef kParams[] = {
     /* [PARAM_MASTER_VOLUME] */ { "master_volume", PARAM_TYPE_FLOAT, 0.0f,  1.0f,     0.8f   },
     /* [PARAM_TEST_TONE_HZ]  */ { "test_tone_hz",  PARAM_TYPE_FLOAT, 20.0f, 20000.0f, 440.0f },
+    /* [PARAM_WAVEFORM]      */ { "waveform",      PARAM_TYPE_ENUM,  0.0f,  3.0f,     0.0f   },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

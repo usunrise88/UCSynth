@@ -5,6 +5,7 @@
 // Железо и распиновка: docs/hardware-stage1-pcm5102.md.
 #include "audio.h"
 #include "control.h"
+#include "wavetable.h"
 
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -39,7 +40,6 @@ static std::atomic<int> s_scope_ready{0};
 static void audio_task(void *arg)
 {
     (void)arg;
-    static constexpr float kTwoPi = 6.28318530717958647692f;
 
     int16_t block[BLOCK_FRAMES * 2];   // STEREO-слот: L и R одинаковые (mono → оба канала)
     float phase = 0.0f;                // [0,1), живёт только здесь (Core 0) — без атомиков
@@ -54,14 +54,15 @@ static void audio_task(void *arg)
 
     for (;;) {
         // control-rate: параметры читаем раз в блок, не на каждый семпл.
-        const float freq      = get_param(PARAM_TEST_TONE_HZ);
-        const float vol       = get_param(PARAM_MASTER_VOLUME);
-        const float phase_inc = freq / (float)SAMPLE_RATE;   // оборотов на семпл
+        const float   freq      = get_param(PARAM_TEST_TONE_HZ);
+        const float   vol       = get_param(PARAM_MASTER_VOLUME);
+        const uint8_t wave      = (uint8_t)get_param(PARAM_WAVEFORM);
+        const float   phase_inc = freq / (float)SAMPLE_RATE;   // оборотов на семпл
 
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             if (fade < 1.0f) { fade += fade_step; if (fade > 1.0f) fade = 1.0f; }
 
-            const float s0 = sinf(kTwoPi * phase);   // форма волны [-1,1] — для осциллографа
+            const float s0 = wavetable_sample(wave, phase);   // форма волны [-1,1]
             const float s  = s0 * vol * fade;        // на выход (с громкостью)
             phase += phase_inc;
             if (phase >= 1.0f) phase -= 1.0f;
@@ -117,6 +118,9 @@ void audio_init(void)
     };
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
+
+    // Таблицы форм волн (генерятся в RAM один раз) — до старта задачи.
+    wavetable_init();
 
     // 3) Аудио-задача на Core 0 (Core 1 отдан comm/UI). Приоритет выше comm(5): звук важнее.
     xTaskCreatePinnedToCore(audio_task, "audio", 4096, nullptr, 10, nullptr, 0);
