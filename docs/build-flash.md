@@ -60,8 +60,8 @@ esptool.py --chip esp32s3 -p COM7 -b 460800 write_flash 0x0 ucsynth-merged.bin
 I (…) ucsynth: UCSynth boot — этап 0 (каркас и протокол)
 I (…) ucsynth: chip ESP32-S3 rev N, 2 ядр(а), flash 16 МБ
 I (…) ucsynth: PSRAM 8 МБ (свободно …)
-I (…) control: init (заглушка — модель параметров, этап 0.2)
-I (…) comm:    init (заглушка — протокол Serial, этап 0.3)
+I (…) control: реестр: 2 параметр(ов)
+I (…) comm:    протокол Serial (бинарный) на USB-JTAG, задача на Core 1
 I (…) io:      init (заглушка — периферия, этапы 8–10)
 I (…) audio:   init (заглушка — I2S/DSP, этап 1)
 I (…) ucsynth: boot complete
