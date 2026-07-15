@@ -45,7 +45,7 @@ int main() {
     control_init();
 
     // --- реестр ---
-    CHECK(param_count() == 2, "param_count == 2");
+    CHECK(param_count() == 3, "param_count == 3");
     CHECK(std::fabs(get_param(PARAM_MASTER_VOLUME) - 0.8f) < 1e-6f, "master_volume def 0.8");
 
     // --- GET id0 ---
@@ -81,10 +81,10 @@ int main() {
     // --- LIST ---
     {
         auto s = run({ CMD_LIST });
-        CHECK(s.frames.size() == 3, "LIST -> 2xPARAM + LISTEND");
-        CHECK(s.frames[0][0] == RSP_PARAM && s.frames[1][0] == RSP_PARAM, "две строки PARAM");
-        auto &e = s.frames[2];
-        CHECK(e[0] == RSP_LISTEND && u16(&e[1]) == 2, "LISTEND count=2");
+        CHECK(s.frames.size() == 4, "LIST -> 3xPARAM + LISTEND");
+        CHECK(s.frames[0][0] == RSP_PARAM && s.frames[1][0] == RSP_PARAM && s.frames[2][0] == RSP_PARAM, "три строки PARAM");
+        auto &e = s.frames[3];
+        CHECK(e[0] == RSP_LISTEND && u16(&e[1]) == 3, "LISTEND count=3");
         auto &p0 = s.frames[0];
         const uint8_t namelen = p0[1 + 2 + 1 + 16];  // opcode+id+type+4*f32
         CHECK(namelen == 13 && std::memcmp(&p0[1 + 2 + 1 + 16 + 1], "master_volume", 13) == 0, "имя master_volume");
@@ -92,10 +92,11 @@ int main() {
 
     // --- STAT ---
     {
-        sys_stats_t st = { 12345, 6789, 42 };
+        sys_stats_t st = { 12345, 6789, 42, 500, 3 };
         auto s = run({ CMD_STAT }, &st);
         auto &f = s.frames[0];
-        CHECK(f[0] == RSP_STAT && u32(&f[1]) == 12345 && u32(&f[5]) == 6789 && u32(&f[9]) == 42, "STAT поля");
+        CHECK(f[0] == RSP_STAT && u32(&f[1]) == 12345 && u32(&f[5]) == 6789 && u32(&f[9]) == 42
+              && u32(&f[13]) == 500 && u32(&f[17]) == 3, "STAT поля");
     }
 
     // --- NOTE_ON -> ACK ---

@@ -24,7 +24,7 @@ enum {
     RSP_VALUE   = 0x81,  // [id:u16][val:f32]
     RSP_PARAM   = 0x82,  // [id:u16][type:u8][min:f32][max:f32][def:f32][cur:f32][namelen:u8][name]
     RSP_LISTEND = 0x83,  // [count:u16]
-    RSP_STAT    = 0x86,  // [heap:u32][minheap:u32][uptime_ms:u32]
+    RSP_STAT    = 0x86,  // [heap:u32][minheap:u32][uptime_ms:u32][cpu_permille:u32][underruns:u32]
     RSP_ERR     = 0xFF,  // [code:u8]
 };
 // Коды ошибок (тело RSP_ERR):
@@ -39,6 +39,8 @@ typedef struct {
     uint32_t heap_free;
     uint32_t heap_min;
     uint32_t uptime_ms;
+    uint32_t cpu_permille;   // загрузка аудио-задачи, ‰ бюджета блока (1000 = впритык к realtime)
+    uint32_t underruns;      // блоки, не уложившиеся в realtime (прокси underrun)
 } sys_stats_t;
 
 // Колбэк выдачи ответного тела. Транспорт оборачивает его в кадр и шлёт; тест — копит.

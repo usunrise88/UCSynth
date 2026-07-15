@@ -92,11 +92,13 @@ void comm_handle_request(const uint8_t *body, size_t body_len,
         return;
     }
     case CMD_STAT: {
-        uint8_t b[13];
+        uint8_t b[21];
         b[0] = RSP_STAT;
-        put_u32(b + 1, stats ? stats->heap_free : 0);
-        put_u32(b + 5, stats ? stats->heap_min  : 0);
-        put_u32(b + 9, stats ? stats->uptime_ms : 0);
+        put_u32(b + 1,  stats ? stats->heap_free    : 0);
+        put_u32(b + 5,  stats ? stats->heap_min     : 0);
+        put_u32(b + 9,  stats ? stats->uptime_ms    : 0);
+        put_u32(b + 13, stats ? stats->cpu_permille : 0);
+        put_u32(b + 17, stats ? stats->underruns    : 0);
         emit(ctx, b, sizeof(b));
         return;
     }

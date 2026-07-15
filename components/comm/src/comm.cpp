@@ -5,6 +5,7 @@
 #include "comm.h"
 #include "protocol.h"
 #include "frame.h"
+#include "audio.h"
 
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -52,10 +53,14 @@ static void comm_task(void *arg)
                 ESP_LOGI(TAG, "NOTE_OFF n=%u", body[1]);
             }
 
+            uint32_t cpu = 0, underruns = 0;
+            audio_get_stats(&cpu, &underruns);
             const sys_stats_t st = {
-                .heap_free = (uint32_t)esp_get_free_heap_size(),
-                .heap_min  = (uint32_t)esp_get_minimum_free_heap_size(),
-                .uptime_ms = (uint32_t)(esp_timer_get_time() / 1000),
+                .heap_free    = (uint32_t)esp_get_free_heap_size(),
+                .heap_min     = (uint32_t)esp_get_minimum_free_heap_size(),
+                .uptime_ms    = (uint32_t)(esp_timer_get_time() / 1000),
+                .cpu_permille = cpu,
+                .underruns    = underruns,
             };
             comm_handle_request(body, blen, &st, emit_usb, nullptr);
         }

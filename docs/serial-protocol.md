@@ -41,7 +41,7 @@
 | 0x81 | VALUE   | `id:u16` `val:f32` (ответ на GET и SET — значение после клампа)               |
 | 0x82 | PARAM   | `id:u16` `type:u8` `min:f32` `max:f32` `def:f32` `cur:f32` `namelen:u8` `name` |
 | 0x83 | LISTEND | `count:u16`                                                                  |
-| 0x86 | STAT    | `heap:u32` `minheap:u32` `uptime_ms:u32`                                      |
+| 0x86 | STAT    | `heap:u32` `minheap:u32` `uptime_ms:u32` `cpu_permille:u32` `underruns:u32`    |
 | 0xFF | ERR     | `code:u8`                                                                     |
 
 `LIST` → серия `PARAM` (по одному на параметр) + завершающий `LISTEND`.
@@ -57,7 +57,8 @@
 LIST:           55 AA 01 03 <crc>
   ← PARAM #0:   55 AA 22 82 0000 00 <min f32> <max f32> <def f32> <cur f32> 0D "master_volume" <crc>
   ← PARAM #1:   55 AA 21 82 0100 00 ... 0C "test_tone_hz" <crc>
-  ← LISTEND:    55 AA 03 83 0200 <crc>
+  ← PARAM #2:   55 AA 1D 82 0200 02 ... 08 "waveform" <crc>   (type 02 = enum, 0..3)
+  ← LISTEND:    55 AA 03 83 0300 <crc>
 
 GET master_volume (id 0):   55 AA 03 02 0000 <crc>
   ← VALUE 0.8:              55 AA 07 81 0000 CDCC4C3F <crc>
@@ -66,7 +67,7 @@ SET master_volume = 0.5:    55 AA 07 01 0000 0000003F <crc>
   ← VALUE 0.5:              55 AA 07 81 0000 0000003F <crc>
 
 STAT:                       55 AA 01 06 <crc>
-  ← STAT:                   55 AA 0D 86 <heap u32> <min u32> <uptime u32> <crc>
+  ← STAT:                   55 AA 15 86 <heap u32> <min u32> <uptime u32> <cpu u32> <underruns u32> <crc>
 ```
 
 ## Проверка на железе
@@ -77,7 +78,8 @@ STAT:                       55 AA 01 06 <crc>
 python tools/serialtest.py COM8      # порт нативного USB S3 (не CH343-мост)
 ```
 
-Скрипт делает LIST → GET → SET → GET → STAT → NOTE_ON и печатает декодированные ответы.
-Ожидаемо: список из двух параметров, `master_volume` меняется с 0.8 на 0.5 и обратно клампится,
-STAT показывает heap/uptime, NOTE_ON → ACK. Строки `ESP_LOG` в потоке — норма, скрипт их
-пропускает (не проходят CRC).
+Скрипт делает LIST → GET → SET → STAT → NOTE_ON → свип `waveform`/`test_tone_hz` и печатает
+декодированные ответы. Ожидаемо: список из трёх параметров (`master_volume`, `test_tone_hz`,
+`waveform`), `master_volume` клампится, STAT показывает heap/uptime + `cpu_permille` (‰ бюджета
+аудио-блока) и `underruns`, NOTE_ON → ACK, смена `waveform` слышна/видна на осциллографе. Строки
+`ESP_LOG` в потоке — норма, скрипт их пропускает (не проходят CRC).

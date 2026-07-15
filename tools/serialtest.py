@@ -90,8 +90,8 @@ def show(frame: bytes):
     elif op == LISTEND:
         print(f"  LISTEND count={struct.unpack_from('<H', frame, 1)[0]}")
     elif op == R_STAT:
-        heap, mn, up = struct.unpack_from("<III", frame, 1)
-        print(f"  STAT heap={heap} minheap={mn} uptime_ms={up}")
+        heap, mn, up, cpu, ur = struct.unpack_from("<IIIII", frame, 1)
+        print(f"  STAT heap={heap} minheap={mn} uptime_ms={up} cpu={cpu/10:.1f}% underruns={ur}")
     elif op == ACK:
         print("  ACK")
     elif op == ERR:
@@ -128,6 +128,12 @@ def main():
         ("SET master_volume = 9 (ждём кламп 1.0)", encode(bytes([SET]) + struct.pack("<Hf", 0, 9.0))),
         ("STAT",                    encode(bytes([STAT]))),
         ("NOTE_ON 60 100",          encode(bytes([NOTE_ON, 60, 100]))),
+        ("SET test_tone_hz = 220 (октава вниз)", encode(bytes([SET]) + struct.pack("<Hf", 1, 220.0))),
+        ("SET waveform = 1 (saw)",    encode(bytes([SET]) + struct.pack("<Hf", 2, 1.0))),
+        ("SET waveform = 2 (square)", encode(bytes([SET]) + struct.pack("<Hf", 2, 2.0))),
+        ("SET waveform = 3 (tri)",    encode(bytes([SET]) + struct.pack("<Hf", 2, 3.0))),
+        ("SET waveform = 0 (sine)",   encode(bytes([SET]) + struct.pack("<Hf", 2, 0.0))),
+        ("SET test_tone_hz = 440 (вернуть)", encode(bytes([SET]) + struct.pack("<Hf", 1, 440.0))),
         ("SET master_volume = 0.8 (вернуть дефолт)", encode(bytes([SET]) + struct.pack("<Hf", 0, 0.8))),
     ]
     for title, frame in steps:
