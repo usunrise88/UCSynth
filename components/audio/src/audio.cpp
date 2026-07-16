@@ -10,6 +10,7 @@
 #include "wavetable.h"
 #include "synth.h"
 #include "lfo.h"
+#include "fx.h"
 
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -95,6 +96,10 @@ static void build_synth_params(SynthParams *sp)
     vp->wave_env.loop = get_param(PARAM_WAVEENV_LOOP) > 0.5f;
     sp->poly_voices = (int)get_param(PARAM_POLY_VOICES);
     sp->legato      = get_param(PARAM_LEGATO) > 0.5f;
+    // этап 5 — глобальные эффекты (применяются в audio_task после суммы голосов)
+    sp->fx.od_on    = get_param(PARAM_OD_ON) > 0.5f;
+    sp->fx.od_drive = get_param(PARAM_OD_DRIVE);
+    sp->fx.od_mix   = get_param(PARAM_OD_MIX);
 }
 
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
@@ -159,8 +164,11 @@ static void audio_task(void *arg)
 
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             float m = fbuf[i];
-            if (!test_on) m = m / (1.0f + fabsf(m));   // мастер софт-клип суммы голосов → [-1,1]
-            // (тест-тон уже ±1 и должен остаться чистым эталоном)
+            if (!test_on) {
+                m = fx_overdrive(m, &sp.fx);           // overdrive (этап 5.1) до мастер-клипа
+                m = m / (1.0f + fabsf(m));             // мастер софт-клип суммы голосов → [-1,1]
+            }
+            // (тест-тон уже ±1 и должен остаться чистым эталоном — FX и клип обходит)
 
             // Снимок формы (после софт-клипа, до громкости) для дисплея.
             s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(m * 127.0f);

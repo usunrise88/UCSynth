@@ -119,3 +119,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT10"
 
 "$OUT10"
+
+# Тест fx (этап 5 — эффекты: overdrive байпас/монотонность/насыщение; delay/reverb добавятся).
+OUT11="$(mktemp -d)/fxtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_fx.cpp" \
+    "$ROOT/components/audio/src/fx.cpp" \
+    -o "$OUT11"
+
+"$OUT11"

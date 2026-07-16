@@ -101,6 +101,10 @@ constexpr ParamDef kParams[] = {
     /* [PARAM_WAVEENV_P8]    */ { "waveenv_p8",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     1.0f    },
     /* [PARAM_WAVEENV_RATE]  */ { "waveenv_rate",  PARAM_TYPE_FLOAT, 0.05f,  20.0f,    1.0f    },
     /* [PARAM_WAVEENV_LOOP]  */ { "waveenv_loop",  PARAM_TYPE_BOOL,  0.0f,   1.0f,     1.0f    },
+    // этап 5.1 — overdrive
+    /* [PARAM_OD_ON]         */ { "od_on",         PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
+    /* [PARAM_OD_DRIVE]      */ { "od_drive",      PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.5f    },
+    /* [PARAM_OD_MIX]        */ { "od_mix",        PARAM_TYPE_FLOAT, 0.0f,   1.0f,     1.0f    },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

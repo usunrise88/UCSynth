@@ -111,6 +111,10 @@ typedef enum {
     PARAM_WAVEENV_P8    = 70,
     PARAM_WAVEENV_RATE  = 71, // время полного прохода всех точек, с
     PARAM_WAVEENV_LOOP  = 72, // зацикливать (bool): непрерывная эволюция vs один проход с hold
+    // --- этап 5.1: overdrive ---
+    PARAM_OD_ON         = 73, // overdrive вкл/вык (bool)
+    PARAM_OD_DRIVE      = 74, // драйв 0..1 (входной гейн в waveshaper)
+    PARAM_OD_MIX        = 75, // wet/dry 0..1
     PARAM_COUNT
 } param_id_t;
 

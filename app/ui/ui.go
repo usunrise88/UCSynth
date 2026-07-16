@@ -132,7 +132,7 @@ func (n *noteSink) off(note uint8) {
 // (only "misc" today, the LIST-driven fallback) is appended to the last column.
 var rackCols = [][]string{
 	{"osc1", "osc2", "osc3", "mixer"},
-	{"filter", "ampenv", "fltenv", "waveenv"},
+	{"filter", "ampenv", "fltenv", "waveenv", "overdrive"},
 	{"global", "lfo1", "lfo2", "modmatrix", "lofi", "debug", "misc"},
 }
 var colWeights = []float32{1, 1.15, 1}

@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "src/audio.cpp" "src/wavetable.cpp" "src/env.cpp" "src/filter.cpp" "src/voice.cpp" "src/synth.cpp" "src/lfo.cpp" "src/waveenv.cpp"
+    SRCS "src/audio.cpp" "src/wavetable.cpp" "src/env.cpp" "src/filter.cpp" "src/voice.cpp" "src/synth.cpp" "src/lfo.cpp" "src/waveenv.cpp" "src/fx.cpp"
     INCLUDE_DIRS "include"
     # control — модель параметров; esp_driver_i2s — I2S std драйвер (PCM5102);
     # esp_driver_gpio — GPIO_NUM_* для распиновки I2S; esp_timer — метрики (время блока).

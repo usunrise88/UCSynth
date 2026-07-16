@@ -6,14 +6,17 @@
 
 #include <cstdint>
 #include "voice.h"
+#include "fx.h"
 
 static constexpr int SYNTH_MAX_VOICES = 8;
 
-// Параметры синта: DSP голоса (общие) + полифония/глайд/легато.
+// Параметры синта: DSP голоса (общие) + полифония/глайд/легато + глобальные эффекты (применяются в
+// audio.cpp после суммы голосов; synth_render их не трогает — несёт как единая точка control→DSP).
 struct SynthParams {
     VoiceParams voice;        // форма/фильтр/огибающие/lofi/glide_time — общие для всех голосов
     int         poly_voices;  // 1..8 (1 = моно со стеком нот)
     bool        legato;       // моно: перекрытие нот не ретригерит огибающую
+    FxParams    fx;           // overdrive/delay/reverb (этап 5) — применяет audio_task
 };
 
 void synth_init(void);

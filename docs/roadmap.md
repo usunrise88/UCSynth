@@ -138,8 +138,10 @@ VCF-огиб., velocity, mod-wheel. Приёмники: pitch, cutoff, resonance
 
 Порядок — от дешёвого к дорогому, ревер последним (максимальный риск по CPU).
 
-### 5.1 Overdrive
+### 5.1 Overdrive — 🔨 собран (замер на железе за пользователем)
 Waveshaper (tanh/полином). Без оверсэмплинга. Правильный gain staging на входе *(урок Analog Heat: аттенюация для headroom)*.
+Реализовано: `fx.*` (`fx_overdrive` — tanh + drive-гейн + wet/dry), `FxParams` в `SynthParams`, применяется в
+`audio_task` до мастер-клипа; тест-тон обходит FX.
 
 ### 5.2 Delay
 Кольцевой буфер **в PSRAM**. Feedback, фильтр в цепи ОС, tempo-sync позже.

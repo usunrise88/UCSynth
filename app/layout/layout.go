@@ -29,6 +29,7 @@ var Blocks = []Block{
 	{"lfo2", "LFO 2"},
 	{"waveenv", "Wave-огибающая"},
 	{"modmatrix", "Мод-матрица"},
+	{"overdrive", "Overdrive"},
 	{"lofi", "Lo-fi"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
@@ -112,6 +113,10 @@ var byName = map[string]Field{
 	"waveenv_p8":   {"waveenv", "8", "", nil},
 	"waveenv_rate": {"waveenv", "Rate", "с", nil},
 	"waveenv_loop": {"waveenv", "Loop", "", nil},
+	// этап 5.1 — overdrive
+	"od_on":    {"overdrive", "Вкл", "", nil},
+	"od_drive": {"overdrive", "Драйв", "", nil},
+	"od_mix":   {"overdrive", "Mix", "", nil},
 	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
