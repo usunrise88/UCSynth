@@ -55,6 +55,7 @@ Gio-UI в облаке не запускается (headless, нужен Windows
 | `serial/` | перечень портов, open, DTR/RTS (go.bug.st/serial) | — (I/O) |
 | `device/` | клиентский реестр из LIST, приоритетный writer (ноты > SET > STAT), throttle, echo | fake-прошивка (net.Pipe) |
 | `layout/` | карта параметр→блок + подписи enum/единицы (прошивка их не шлёт) | да |
-| `ui/`, `cmd/controller/` | Gio: блоки, клавиатура, метрики, окно | кросс-сборка Windows |
+| `ui/` | Gio: блоки, клавиатура, метрики | headless-тест роутинга (`input.Router`) + кросс-сборка |
+| `cmd/controller/` | окно + связка | кросс-сборка Windows |
 
 Контракт протокола — `docs/serial-protocol.md`. Референс-клиент на Python — `tools/serialtest.py`.

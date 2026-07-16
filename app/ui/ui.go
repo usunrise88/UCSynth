@@ -126,6 +126,12 @@ func (c *Controller) disconnect() {
 // Layout renders one frame.
 func (c *Controller) Layout(gtx C) D {
 	paint.FillShape(gtx.Ops, c.th.Palette.Bg, clip.Rect{Max: gtx.Constraints.Max}.Op())
+
+	// Read widget clicks BEFORE laying out. material.Button.Layout → Clickable.layout drains
+	// every pending click in a loop and discards it (widget/button.go), so a separate Clicked()
+	// query must run first or it always sees an empty queue. The events themselves were routed
+	// against last frame's input tree, so reading them here (before this frame's areas are
+	// recorded) is correct.
 	c.handleButtons(gtx)
 
 	var snap device.Snapshot
