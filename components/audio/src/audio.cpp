@@ -19,6 +19,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 #include <cmath>
 #include <cstdint>
@@ -36,6 +37,9 @@ static constexpr gpio_num_t PIN_WS  = GPIO_NUM_6;   // word select (LRCK)
 static constexpr gpio_num_t PIN_DIN = GPIO_NUM_7;   // data (S3 → модуль)
 
 static i2s_chan_handle_t s_tx = nullptr;
+
+// Состояние эффект-секции (этап 5). Кольцевые буферы delay — в PSRAM (аллокация в audio_init).
+static FxState s_fx = {};
 
 // Осциллограф: двойной буфер снимков формы. Core 0 пишет, Core 1 читает. Без блокировок и
 // практически без тиринга: читатель копирует за микросекунды, писатель флипает раз в ~2.7 мс.
@@ -100,6 +104,11 @@ static void build_synth_params(SynthParams *sp)
     sp->fx.od_on    = get_param(PARAM_OD_ON) > 0.5f;
     sp->fx.od_drive = get_param(PARAM_OD_DRIVE);
     sp->fx.od_mix   = get_param(PARAM_OD_MIX);
+    sp->fx.delay_on       = get_param(PARAM_DELAY_ON) > 0.5f;
+    sp->fx.delay_time     = get_param(PARAM_DELAY_TIME);
+    sp->fx.delay_feedback = get_param(PARAM_DELAY_FEEDBACK);
+    sp->fx.delay_damp     = get_param(PARAM_DELAY_DAMP);
+    sp->fx.delay_mix      = get_param(PARAM_DELAY_MIX);
 }
 
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
@@ -108,8 +117,9 @@ static void audio_task(void *arg)
 {
     (void)arg;
 
-    int16_t block[BLOCK_FRAMES * 2];   // STEREO-слот: L и R одинаковые (mono → оба канала)
-    float   fbuf[BLOCK_FRAMES];        // float-микс синта (до мастера/клампа)
+    int16_t block[BLOCK_FRAMES * 2];   // STEREO: L, R (до этапа 5.2 совпадали; теперь стерео-тракт FX)
+    float   fbuf[BLOCK_FRAMES];        // float-микс синта (сумма голосов)
+    float   chL[BLOCK_FRAMES], chR[BLOCK_FRAMES];   // стерео-тракт эффектов (этап 5.2 delay)
 
     float tt_phase = 0.0f;             // фаза тест-тона (отдельный сквозной путь, без env/фильтра)
 
@@ -162,27 +172,35 @@ static void audio_task(void *arg)
             synth_render(&sp, (float)SAMPLE_RATE, fbuf, BLOCK_FRAMES);   // сумма активных голосов
         }
 
+        // Хвост эффектов: overdrive (моно) → split L/R → delay (стерео) → пер-канальный софт-клип →
+        // scope(L) → громкость → int16 стерео. Все FX off → L=R=моно (совместимость с доэффектным
+        // трактом). Тест-тон обходит FX и клип (чистый эталон, mono в оба канала).
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             float m = fbuf[i];
-            if (!test_on) {
-                m = fx_overdrive(m, &sp.fx);           // overdrive (этап 5.1) до мастер-клипа
-                m = m / (1.0f + fabsf(m));             // мастер софт-клип суммы голосов → [-1,1]
-            }
-            // (тест-тон уже ±1 и должен остаться чистым эталоном — FX и клип обходит)
+            if (!test_on) m = fx_overdrive(m, &sp.fx);   // до split (может выйти за ±1 — клип ниже)
+            chL[i] = chR[i] = m;
+        }
+        if (!test_on) fx_delay(&s_fx, &sp.fx, chL, chR, BLOCK_FRAMES, (float)SAMPLE_RATE);
 
-            // Снимок формы (после софт-клипа, до громкости) для дисплея.
-            s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(m * 127.0f);
+        for (int i = 0; i < BLOCK_FRAMES; ++i) {
+            float L = chL[i], R = chR[i];
+            if (!test_on) {                              // сумма + эхо могут выйти за ±1 → софт-клип на канал
+                L = L / (1.0f + fabsf(L));
+                R = R / (1.0f + fabsf(R));
+            }
+            // Снимок формы (канал L, после клипа, до громкости) для дисплея.
+            s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(L * 127.0f);
             if (scope_pos >= AUDIO_SCOPE_LEN) {
                 s_scope_ready.store(scope_wr, std::memory_order_release);
                 scope_wr ^= 1;
                 scope_pos = 0;
             }
 
-            float s = m * master;
-            if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;   // финальная страховка перед int16
-            const int16_t v = (int16_t)lrintf(s * 32767.0f);
-            block[2 * i]     = v;   // L
-            block[2 * i + 1] = v;   // R
+            float outL = L * master, outR = R * master;
+            if (outL > 1.0f) outL = 1.0f; else if (outL < -1.0f) outL = -1.0f;   // страховка перед int16
+            if (outR > 1.0f) outR = 1.0f; else if (outR < -1.0f) outR = -1.0f;
+            block[2 * i]     = (int16_t)lrintf(outL * 32767.0f);   // L
+            block[2 * i + 1] = (int16_t)lrintf(outR * 32767.0f);   // R
         }
 
         // Метрики: время генерации блока против бюджета realtime (этап 1.2).
@@ -261,6 +279,22 @@ void audio_init(void)
 
     // Пул голосов (статический в synth) — до старта задачи.
     synth_init();
+
+    // FX-буферы delay — ТОЛЬКО PSRAM (этап 5.2). Стерео 1 с @48к = 2×48000 float ≈ 384 КБ; во внутренний
+    // DRAM не влезет и не нужно. Первая heap_caps-аллокация в проекте. Не вышло (PSRAM off/фрагментация)
+    // → s_fx.dl_l/dl_r = nullptr, fx_delay сам пропускает эффект (delay просто не работает, звук — нет).
+    const int dl_len = SAMPLE_RATE;   // 1 секунда
+    float *dl_l = (float *)heap_caps_malloc(dl_len * sizeof(float), MALLOC_CAP_SPIRAM);
+    float *dl_r = (float *)heap_caps_malloc(dl_len * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (dl_l && dl_r) {
+        fx_delay_init(&s_fx, dl_l, dl_r, dl_len);
+        ESP_LOGI(TAG, "FX delay: буферы в PSRAM %d КБ (стерео 1 с)", (int)(2 * dl_len * sizeof(float) / 1024));
+    } else {
+        if (dl_l) heap_caps_free(dl_l);
+        if (dl_r) heap_caps_free(dl_r);
+        fx_delay_init(&s_fx, nullptr, nullptr, 0);   // delay отключён, тракт работает без него
+        ESP_LOGE(TAG, "FX delay: не выделить PSRAM (%d КБ) — delay отключён", (int)(2 * dl_len * sizeof(float) / 1024));
+    }
 
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).
     s_note_q = xQueueCreate(32, sizeof(NoteEvent));

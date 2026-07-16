@@ -115,6 +115,12 @@ typedef enum {
     PARAM_OD_ON         = 73, // overdrive вкл/вык (bool)
     PARAM_OD_DRIVE      = 74, // драйв 0..1 (входной гейн в waveshaper)
     PARAM_OD_MIX        = 75, // wet/dry 0..1
+    // --- этап 5.2: delay (стерео, кольцо в PSRAM) ---
+    PARAM_DELAY_ON       = 76, // delay вкл/вык (bool)
+    PARAM_DELAY_TIME     = 77, // время задержки, мс (≤1000)
+    PARAM_DELAY_FEEDBACK = 78, // обратная связь 0..0.95
+    PARAM_DELAY_DAMP     = 79, // затухание ВЧ в ОС 0..1
+    PARAM_DELAY_MIX      = 80, // wet/dry 0..1
     PARAM_COUNT
 } param_id_t;
 

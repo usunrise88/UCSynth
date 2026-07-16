@@ -120,7 +120,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
 
 "$OUT10"
 
-# Тест fx (этап 5 — эффекты: overdrive байпас/монотонность/насыщение; delay/reverb добавятся).
+# Тест fx (этап 5 — overdrive: байпас/монотонность/насыщение).
 OUT11="$(mktemp -d)/fxtest"
 g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/audio/src" \
@@ -129,3 +129,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT11"
 
 "$OUT11"
+
+# Тест delay (этап 5.2 — стерео delay: эхо/затухание, байпас, устойчивость).
+OUT12="$(mktemp -d)/delaytest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_delay.cpp" \
+    "$ROOT/components/audio/src/fx.cpp" \
+    -o "$OUT12"
+
+"$OUT12"

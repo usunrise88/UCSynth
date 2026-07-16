@@ -105,6 +105,12 @@ constexpr ParamDef kParams[] = {
     /* [PARAM_OD_ON]         */ { "od_on",         PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
     /* [PARAM_OD_DRIVE]      */ { "od_drive",      PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.5f    },
     /* [PARAM_OD_MIX]        */ { "od_mix",        PARAM_TYPE_FLOAT, 0.0f,   1.0f,     1.0f    },
+    // этап 5.2 — delay (стерео, PSRAM)
+    /* [PARAM_DELAY_ON]      */ { "delay_on",      PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
+    /* [PARAM_DELAY_TIME]    */ { "delay_time",    PARAM_TYPE_FLOAT, 1.0f,   1000.0f,  300.0f  },
+    /* [PARAM_DELAY_FEEDBACK]*/ { "delay_feedback",PARAM_TYPE_FLOAT, 0.0f,   0.95f,    0.35f   },
+    /* [PARAM_DELAY_DAMP]    */ { "delay_damp",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.3f    },
+    /* [PARAM_DELAY_MIX]     */ { "delay_mix",     PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.3f    },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

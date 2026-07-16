@@ -30,6 +30,7 @@ var Blocks = []Block{
 	{"waveenv", "Wave-огибающая"},
 	{"modmatrix", "Мод-матрица"},
 	{"overdrive", "Overdrive"},
+	{"delay", "Delay"},
 	{"lofi", "Lo-fi"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
@@ -117,6 +118,12 @@ var byName = map[string]Field{
 	"od_on":    {"overdrive", "Вкл", "", nil},
 	"od_drive": {"overdrive", "Драйв", "", nil},
 	"od_mix":   {"overdrive", "Mix", "", nil},
+	// этап 5.2 — delay (стерео)
+	"delay_on":       {"delay", "Вкл", "", nil},
+	"delay_time":     {"delay", "Время", "мс", nil},
+	"delay_feedback": {"delay", "Feedback", "", nil},
+	"delay_damp":     {"delay", "Damp", "", nil},
+	"delay_mix":      {"delay", "Mix", "", nil},
 	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
