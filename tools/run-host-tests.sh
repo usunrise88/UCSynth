@@ -26,3 +26,36 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT2"
 
 "$OUT2"
+
+# Тест env (ADSR: сегменты, фронты gate, ретригер, loop).
+OUT3="$(mktemp -d)/envtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_env.cpp" \
+    "$ROOT/components/audio/src/env.cpp" \
+    -o "$OUT3"
+
+"$OUT3"
+
+# Тест filter (ZDF SVF: АЧХ LP/HP/BP, OFF, устойчивость при резонансе).
+OUT4="$(mktemp -d)/filttest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_filter.cpp" \
+    "$ROOT/components/audio/src/filter.cpp" \
+    -o "$OUT4"
+
+"$OUT4"
+
+# Тест voice (голос целиком: нота/release, headroom, lo-fi, latch).
+OUT5="$(mktemp -d)/voicetest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_voice.cpp" \
+    "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/filter.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT5"
+
+"$OUT5"

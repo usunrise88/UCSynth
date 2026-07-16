@@ -131,6 +131,14 @@ def main():
 
     # id параметров (стабильные, см. control.h). LIST даёт их динамически — тут для удобства.
     PID_VOL, PID_HZ, PID_WAVE, PID_TEST = 0, 1, 2, 3
+    PID_AMP_A, PID_AMP_D, PID_AMP_S, PID_AMP_R, PID_LATCH, PID_AMP_LOOP = 4, 5, 6, 7, 8, 9
+    PID_OSC1_LVL, PID_OSC1_DET = 10, 11
+    PID_OSC2_W, PID_OSC2_LVL, PID_OSC2_DET = 12, 13, 14
+    PID_OSC3_W, PID_OSC3_LVL, PID_OSC3_DET = 15, 16, 17
+    PID_NOISE, PID_RING = 18, 19
+    PID_CUTOFF, PID_RES, PID_FMODE = 20, 21, 22
+    PID_FA, PID_FD, PID_FS, PID_FR, PID_FENV, PID_FLOOP = 23, 24, 25, 26, 27, 28
+    PID_LOFI, PID_LOFI_BITS = 29, 30
 
     def setp(pid, val):
         return encode(bytes([SET]) + struct.pack("<Hf", pid, val))
@@ -174,7 +182,80 @@ def main():
     play("NOTE C6 (84 ≈ 1047 Гц) меандром", 84)
 
     step("SET waveform = 0 (sine, вернуть)", setp(PID_WAVE, 0.0))
-    step("STAT (после игры — cpu/underruns)", encode(bytes([STAT])))
+
+    # --- этап 3.1: ADSR (VCA) ---
+    print("\n=== 3.1 ADSR (VCA) ===")
+    step("pluck: attack 0.005 / decay 0.15 / sustain 0 / release 0.1",
+         setp(PID_AMP_A, 0.005))
+    step("  decay 0.15", setp(PID_AMP_D, 0.15))
+    step("  sustain 0", setp(PID_AMP_S, 0.0))
+    step("  release 0.1", setp(PID_AMP_R, 0.1))
+    play("NOTE C4 (60) пиццикато — быстро гаснет", 60, hold=0.15)
+    play("NOTE E4 (64) пиццикато", 64, hold=0.15)
+    step("pad: attack 0.6 / release 0.8 / sustain 0.8", setp(PID_AMP_A, 0.6))
+    step("  sustain 0.8", setp(PID_AMP_S, 0.8))
+    step("  release 0.8", setp(PID_AMP_R, 0.8))
+    play("NOTE C4 (60) пэд — плавный вход/выход", 60, hold=1.5)
+
+    # --- drone: latch ---
+    print("\n=== 3.1 drone (latch) ===")
+    step("latch = 1", setp(PID_LATCH, 1.0))
+    print("NOTE A3 (57) + latch — дрон держится после note-off:")
+    ser.write(encode(bytes([NOTE_ON, 57, 100]))); drain(ser, dec)
+    ser.write(encode(bytes([NOTE_OFF, 57]))); drain(ser, dec, 0.2)
+    time.sleep(2.5)
+    step("latch = 0 — дрон отпускается (релиз)", setp(PID_LATCH, 0.0))
+    # вернуть организменный VCA-env для остальных демо
+    step("VCA-env → орган (A 0.005 / S 1 / R 0.02)", setp(PID_AMP_A, 0.005))
+    step("  sustain 1", setp(PID_AMP_S, 1.0)); step("  release 0.02", setp(PID_AMP_R, 0.02))
+
+    # --- этап 3.2: фильтр + VCF-env ---
+    print("\n=== 3.2 фильтр (ZDF SVF) + VCF-env ===")
+    step("saw", setp(PID_WAVE, 1.0))
+    step("cutoff 800 Гц (глухо)", setp(PID_CUTOFF, 800.0))
+    play("NOTE C4 (60) — приглушённо (LP 800)", 60, hold=1.2)
+    step("resonance 0.85", setp(PID_RES, 0.85))
+    play("NOTE C4 (60) — с резонансом", 60, hold=1.2)
+    step("VCF-env: env_amt 0.8 (свип вверх)", setp(PID_FENV, 0.8))
+    step("  flt sustain 0 (свип вниз к cutoff)", setp(PID_FS, 0.0))
+    step("  flt decay 0.4", setp(PID_FD, 0.4))
+    play("NOTE C4 (60) — вау-свип фильтра по ноте", 60, hold=1.2)
+    play("NOTE C3 (48) — свип ниже", 48, hold=1.2)
+    step("фильтр назад: cutoff 20000 / res 0 / env_amt 0", setp(PID_CUTOFF, 20000.0))
+    step("  res 0", setp(PID_RES, 0.0)); step("  env_amt 0", setp(PID_FENV, 0.0))
+    step("  flt sustain 1", setp(PID_FS, 1.0))
+
+    # --- этап 3.3: три осц + микшер ---
+    print("\n=== 3.3 три осц + микшер ===")
+    step("osc2 saw, уровень 0.8", setp(PID_OSC2_W, 1.0))
+    step("  osc2 level 0.8", setp(PID_OSC2_LVL, 0.8))
+    step("  osc2 detune +0.1 полутона (расстройка/густота)", setp(PID_OSC2_DET, 0.1))
+    play("NOTE C4 (60) — 2 осц, лёгкий детюн (бьётся)", 60, hold=1.5)
+    step("osc3 square, уровень 0.5, detune -0.12", setp(PID_OSC3_W, 2.0))
+    step("  osc3 level 0.5", setp(PID_OSC3_LVL, 0.5))
+    step("  osc3 detune -0.12", setp(PID_OSC3_DET, -0.12))
+    play("NOTE C4 (60) — 3 осц, густой унисон", 60, hold=1.5)
+    step("noise 0.25", setp(PID_NOISE, 0.25))
+    play("NOTE C4 (60) — с шумом (дыхание)", 60, hold=1.2)
+    step("noise 0", setp(PID_NOISE, 0.0))
+    step("ring mod 0.7 (осц1×осц2)", setp(PID_RING, 0.7))
+    play("NOTE C4 (60) — ring mod (металл)", 60, hold=1.2)
+    step("ring 0 / osc2 level 0 / osc3 level 0 (назад к 1 осц)", setp(PID_RING, 0.0))
+    step("  osc2 level 0", setp(PID_OSC2_LVL, 0.0)); step("  osc3 level 0", setp(PID_OSC3_LVL, 0.0))
+
+    # --- этап 3.4: lo-fi ---
+    print("\n=== 3.4 lo-fi ===")
+    play("NOTE C6 (84) чистый (band-limit, для сравнения)", 84, hold=1.0)
+    step("lofi = 1, bits = 4", setp(PID_LOFI, 1.0))
+    step("  lofi_bits 4", setp(PID_LOFI_BITS, 4.0))
+    play("NOTE C6 (84) lo-fi 4 бит — грязь + алиасинг", 84, hold=1.2)
+    step("lofi_bits 2 (грубее)", setp(PID_LOFI_BITS, 2.0))
+    play("NOTE C4 (60) lo-fi 2 бит", 60, hold=1.2)
+    step("lofi = 0 (назад)", setp(PID_LOFI, 0.0))
+    step("  lofi_bits 16", setp(PID_LOFI_BITS, 16.0))
+
+    step("SET waveform = 0 (sine)", setp(PID_WAVE, 0.0))
+    step("STAT (после всех демо — cpu/underruns)", encode(bytes([STAT])))
 
     # Вернуть отладочный тест-тон и дефолты.
     step("SET test_tone = 1 (тест-тон вернуть)", setp(PID_TEST, 1.0))

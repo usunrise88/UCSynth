@@ -21,10 +21,41 @@ struct ParamDef {
 };
 
 constexpr ParamDef kParams[] = {
-    /* [PARAM_MASTER_VOLUME] */ { "master_volume", PARAM_TYPE_FLOAT, 0.0f,  1.0f,     0.8f   },
-    /* [PARAM_TEST_TONE_HZ]  */ { "test_tone_hz",  PARAM_TYPE_FLOAT, 20.0f, 20000.0f, 440.0f },
-    /* [PARAM_WAVEFORM]      */ { "waveform",      PARAM_TYPE_ENUM,  0.0f,  3.0f,     0.0f   },
-    /* [PARAM_TEST_TONE]     */ { "test_tone",     PARAM_TYPE_BOOL,  0.0f,  1.0f,     1.0f   },
+    /* [PARAM_MASTER_VOLUME] */ { "master_volume", PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.8f    },
+    /* [PARAM_TEST_TONE_HZ]  */ { "test_tone_hz",  PARAM_TYPE_FLOAT, 20.0f,  20000.0f, 440.0f  },
+    /* [PARAM_WAVEFORM]      */ { "waveform",      PARAM_TYPE_ENUM,  0.0f,   3.0f,     0.0f    },
+    /* [PARAM_TEST_TONE]     */ { "test_tone",     PARAM_TYPE_BOOL,  0.0f,   1.0f,     1.0f    },
+    // этап 3.1 — ADSR (VCA) + drone
+    /* [PARAM_AMP_ATTACK]    */ { "amp_attack",    PARAM_TYPE_FLOAT, 0.001f, 5.0f,     0.005f  },
+    /* [PARAM_AMP_DECAY]     */ { "amp_decay",     PARAM_TYPE_FLOAT, 0.001f, 5.0f,     0.1f    },
+    /* [PARAM_AMP_SUSTAIN]   */ { "amp_sustain",   PARAM_TYPE_FLOAT, 0.0f,   1.0f,     1.0f    },
+    /* [PARAM_AMP_RELEASE]   */ { "amp_release",   PARAM_TYPE_FLOAT, 0.001f, 5.0f,     0.02f   },
+    /* [PARAM_LATCH]         */ { "latch",         PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
+    /* [PARAM_AMP_LOOP]      */ { "amp_loop",      PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
+    // этап 3.3 — три осц + микшер
+    /* [PARAM_OSC1_LEVEL]    */ { "osc1_level",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     1.0f    },
+    /* [PARAM_OSC1_DETUNE]   */ { "osc1_detune",   PARAM_TYPE_FLOAT, -24.0f, 24.0f,    0.0f    },
+    /* [PARAM_OSC2_WAVE]     */ { "osc2_wave",     PARAM_TYPE_ENUM,  0.0f,   3.0f,     0.0f    },
+    /* [PARAM_OSC2_LEVEL]    */ { "osc2_level",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.0f    },
+    /* [PARAM_OSC2_DETUNE]   */ { "osc2_detune",   PARAM_TYPE_FLOAT, -24.0f, 24.0f,    0.0f    },
+    /* [PARAM_OSC3_WAVE]     */ { "osc3_wave",     PARAM_TYPE_ENUM,  0.0f,   3.0f,     0.0f    },
+    /* [PARAM_OSC3_LEVEL]    */ { "osc3_level",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.0f    },
+    /* [PARAM_OSC3_DETUNE]   */ { "osc3_detune",   PARAM_TYPE_FLOAT, -24.0f, 24.0f,    0.0f    },
+    /* [PARAM_NOISE_LEVEL]   */ { "noise_level",   PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.0f    },
+    /* [PARAM_RING_LEVEL]    */ { "ring_level",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.0f    },
+    // этап 3.2 — фильтр (ZDF SVF) + ADSR (VCF)
+    /* [PARAM_CUTOFF]        */ { "cutoff",        PARAM_TYPE_FLOAT, 20.0f,  20000.0f, 20000.0f},
+    /* [PARAM_RESONANCE]     */ { "resonance",     PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.0f    },
+    /* [PARAM_FILTER_MODE]   */ { "filter_mode",   PARAM_TYPE_ENUM,  0.0f,   3.0f,     0.0f    },
+    /* [PARAM_FLT_ATTACK]    */ { "flt_attack",    PARAM_TYPE_FLOAT, 0.001f, 5.0f,     0.005f  },
+    /* [PARAM_FLT_DECAY]     */ { "flt_decay",     PARAM_TYPE_FLOAT, 0.001f, 5.0f,     0.1f    },
+    /* [PARAM_FLT_SUSTAIN]   */ { "flt_sustain",   PARAM_TYPE_FLOAT, 0.0f,   1.0f,     1.0f    },
+    /* [PARAM_FLT_RELEASE]   */ { "flt_release",   PARAM_TYPE_FLOAT, 0.001f, 5.0f,     0.02f   },
+    /* [PARAM_FLT_ENV_AMT]   */ { "flt_env_amt",   PARAM_TYPE_FLOAT, -1.0f,  1.0f,     0.0f    },
+    /* [PARAM_FLT_LOOP]      */ { "flt_loop",      PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
+    // этап 3.4 — lo-fi
+    /* [PARAM_LOFI]          */ { "lofi",          PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
+    /* [PARAM_LOFI_BITS]     */ { "lofi_bits",     PARAM_TYPE_INT,   1.0f,   16.0f,    16.0f   },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

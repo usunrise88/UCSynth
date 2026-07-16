@@ -45,7 +45,7 @@ int main() {
     control_init();
 
     // --- реестр ---
-    CHECK(param_count() == 4, "param_count == 4");
+    CHECK(param_count() == 31, "param_count == 31");
     CHECK(std::fabs(get_param(PARAM_MASTER_VOLUME) - 0.8f) < 1e-6f, "master_volume def 0.8");
 
     // --- GET id0 ---
@@ -81,11 +81,12 @@ int main() {
     // --- LIST ---
     {
         auto s = run({ CMD_LIST });
-        CHECK(s.frames.size() == 5, "LIST -> 4xPARAM + LISTEND");
-        CHECK(s.frames[0][0] == RSP_PARAM && s.frames[1][0] == RSP_PARAM
-              && s.frames[2][0] == RSP_PARAM && s.frames[3][0] == RSP_PARAM, "четыре строки PARAM");
-        auto &e = s.frames[4];
-        CHECK(e[0] == RSP_LISTEND && u16(&e[1]) == 4, "LISTEND count=4");
+        CHECK(s.frames.size() == 32, "LIST -> 31xPARAM + LISTEND");
+        bool all_param = true;
+        for (int i = 0; i < 31; ++i) if (s.frames[i][0] != RSP_PARAM) all_param = false;
+        CHECK(all_param, "31 строка PARAM");
+        auto &e = s.frames[31];
+        CHECK(e[0] == RSP_LISTEND && u16(&e[1]) == 31, "LISTEND count=31");
         auto &p0 = s.frames[0];
         const uint8_t namelen = p0[1 + 2 + 1 + 16];  // opcode+id+type+4*f32
         CHECK(namelen == 13 && std::memcmp(&p0[1 + 2 + 1 + 16 + 1], "master_volume", 13) == 0, "имя master_volume");
