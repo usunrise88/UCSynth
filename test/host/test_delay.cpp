@@ -39,6 +39,20 @@ int main()
     for (int i = 2 * dlR - 3; i <= 2 * dlR + 3 && i < total; ++i) { const float a = std::fabs(outR[i]); if (a > e2) e2 = a; }
     check(e2 > 0.1f && e2 < pkv, "второе эхо затухает (feedback)");
 
+    // --- усиление: нормированный вход (пост. 1.0). mix=0.01 → ≈ сухой (не раздут); mix=1 → wet ограничен ---
+    {
+        float a[64], b[64]; float last = 0.0f;
+        fx_delay_init(&fx, bl, br, len);
+        FxParams lo{}; lo.delay_on = true; lo.delay_time = 5.0f; lo.delay_feedback = 0.35f; lo.delay_damp = 0.0f; lo.delay_mix = 0.01f;
+        for (int blk = 0; blk < 1000; ++blk) { for (int i = 0; i < N; ++i) { a[i] = 1.0f; b[i] = 1.0f; } fx_delay(&fx, &lo, a, b, N, sr); last = a[N - 1]; }
+        check(last > 0.9f && last < 1.15f, "delay mix=0.01 → выход ≈ сухой (не раздувается)");
+
+        fx_delay_init(&fx, bl, br, len);
+        FxParams hi1{}; hi1.delay_on = true; hi1.delay_time = 5.0f; hi1.delay_feedback = 0.35f; hi1.delay_damp = 0.0f; hi1.delay_mix = 1.0f;
+        for (int blk = 0; blk < 1000; ++blk) { for (int i = 0; i < N; ++i) { a[i] = 1.0f; b[i] = 1.0f; } fx_delay(&fx, &hi1, a, b, N, sr); last = a[N - 1]; }
+        check(last > 1.0f && last < 3.0f, "delay mix=1 → wet ограничен (~1/(1-fb))");
+    }
+
     // --- off → dry passthrough ---
     fx_delay_init(&fx, bl, br, len);
     FxParams off{}; off.delay_on = false; off.delay_time = 100.0f; off.delay_mix = 1.0f;

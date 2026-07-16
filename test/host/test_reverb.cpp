@@ -42,6 +42,20 @@ int main()
     check(e_early > 0.0, "impulse → есть реверб-хвост");
     check(e_late < e_early, "энергия затухает (early > late)");
 
+    // --- усиление: нормированный вход (пост. 1.0). mix=0.01 → ≈ сухой; mix=1 → wet ограничен (DC-усиление) ---
+    {
+        float a[64], b[64]; float last = 0.0f;
+        fx_reverb_init(&fx, buf, nbuf);
+        FxParams lo{}; lo.reverb_on = true; lo.reverb_size = 0.5f; lo.reverb_damp = 0.3f; lo.reverb_width = 1.0f; lo.reverb_mix = 0.01f;
+        for (int blk = 0; blk < 3000; ++blk) { for (int i = 0; i < N; ++i) { a[i] = 1.0f; b[i] = 1.0f; } fx_reverb(&fx, &lo, a, b, N); last = a[N - 1]; }
+        check(last > 0.85f && last < 1.2f, "reverb mix=0.01 → выход ≈ сухой (не раздувается)");
+
+        fx_reverb_init(&fx, buf, nbuf);
+        FxParams hi1{}; hi1.reverb_on = true; hi1.reverb_size = 0.5f; hi1.reverb_damp = 0.3f; hi1.reverb_width = 1.0f; hi1.reverb_mix = 1.0f;
+        for (int blk = 0; blk < 3000; ++blk) { for (int i = 0; i < N; ++i) { a[i] = 1.0f; b[i] = 1.0f; } fx_reverb(&fx, &hi1, a, b, N); last = a[N - 1]; }
+        check(last > 0.3f && last < 3.5f, "reverb mix=1 → wet ограничен (DC-усиление гребёнок)");
+    }
+
     // off → dry
     fx_reverb_init(&fx, buf, nbuf);
     FxParams off{}; off.reverb_on = false;
