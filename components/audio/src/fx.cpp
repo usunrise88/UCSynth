@@ -70,7 +70,10 @@ namespace {
 const int RV_COMB_LEN[RV_NCOMB] = {1214, 1293, 1390, 1476, 1548, 1623, 1695, 1760};
 const int RV_AP_LEN[RV_NAP]     = {605, 480, 371, 245};
 constexpr int   RV_SPREAD      = 25;
-constexpr float RV_FIXEDGAIN   = 0.015f;   // масштаб входа в гребёнки (чтобы не перегружать)
+// Входной масштаб. Усиление гребёнки на сустейне = 1/(1-fb) (у большой комнаты до ~50×), поэтому вход
+// делим на этот множитель — см. компенсацию (1-fb) в fx_reverb: уровень wet ~ независим от size (size
+// рулит ДЛИНОЙ хвоста, а не громкостью). RV_INGAIN подобран так, что 100% wet ≈ 0.5× сухого (не слэмит клип).
+constexpr float RV_INGAIN      = 0.035f;
 constexpr float RV_ROOM_SCALE  = 0.28f;    // size → feedback ∈ [0.7, 0.98]
 constexpr float RV_ROOM_OFFSET = 0.7f;
 constexpr float RV_DAMP_SCALE  = 0.4f;     // damp → damp1 ∈ [0, 0.4]
@@ -124,15 +127,17 @@ void AUDIO_HOT fx_reverb(FxState *fx, const FxParams *p, float *l, float *r, int
 {
     if (!p->reverb_on || fx->rv_combL[0].buf == nullptr) return;   // off/нет буфера → dry
 
-    const float fb   = p->reverb_size * RV_ROOM_SCALE + RV_ROOM_OFFSET;
-    const float damp = p->reverb_damp * RV_DAMP_SCALE;
-    const float wet1 = p->reverb_width * 0.5f + 0.5f;   // ширина: моно (0) → wet1=0.5,wet2=0.5; стерео (1) → 1,0
-    const float wet2 = (1.0f - p->reverb_width) * 0.5f;
-    const float mix  = p->reverb_mix;
+    const float fb     = p->reverb_size * RV_ROOM_SCALE + RV_ROOM_OFFSET;
+    const float damp   = p->reverb_damp * RV_DAMP_SCALE;
+    const float wet1   = p->reverb_width * 0.5f + 0.5f;   // ширина: моно (0) → wet1=0.5,wet2=0.5; стерео (1) → 1,0
+    const float wet2   = (1.0f - p->reverb_width) * 0.5f;
+    const float mix    = p->reverb_mix;
+    const float ingain = (1.0f - fb) * RV_INGAIN;   // компенсация усиления гребёнок 1/(1-fb) → уровень wet
+                                                    //   ~ независим от size (иначе большая комната = очень громко)
 
     for (int i = 0; i < n; ++i) {
         const float inL = l[i], inR = r[i];
-        const float input = (inL + inR) * RV_FIXEDGAIN;   // моно-вход в оба банка гребёнок
+        const float input = (inL + inR) * ingain;   // моно-вход в оба банка гребёнок (с fb-компенсацией)
 
         float outL = 0.0f, outR = 0.0f;
         for (int k = 0; k < RV_NCOMB; ++k) {              // параллельные гребёнки

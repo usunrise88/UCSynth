@@ -42,18 +42,27 @@ int main()
     check(e_early > 0.0, "impulse → есть реверб-хвост");
     check(e_late < e_early, "энергия затухает (early > late)");
 
-    // --- усиление: нормированный вход (пост. 1.0). mix=0.01 → ≈ сухой; mix=1 → wet ограничен (DC-усиление) ---
+    // --- усиление: нормированный вход (пост. 1.0). mix=0.01 → ≈ сухой; mix=1 → умеренный wet, И уровень
+    //     ~НЕЗАВИСИМ от size (fb-компенсация: большая комната = длиннее хвост, а НЕ громче — фикс «очень громко»).
     {
-        float a[64], b[64]; float last = 0.0f;
-        fx_reverb_init(&fx, buf, nbuf);
-        FxParams lo{}; lo.reverb_on = true; lo.reverb_size = 0.5f; lo.reverb_damp = 0.3f; lo.reverb_width = 1.0f; lo.reverb_mix = 0.01f;
-        for (int blk = 0; blk < 3000; ++blk) { for (int i = 0; i < N; ++i) { a[i] = 1.0f; b[i] = 1.0f; } fx_reverb(&fx, &lo, a, b, N); last = a[N - 1]; }
-        check(last > 0.85f && last < 1.2f, "reverb mix=0.01 → выход ≈ сухой (не раздувается)");
+        float a[64], b[64];
+        // подать постоянный вход blocks×, вернуть установившийся выход (левый канал)
+        auto settle = [&](FxParams &pp, int blocks) -> float {
+            fx_reverb_init(&fx, buf, nbuf);
+            float last = 0.0f;
+            for (int blk = 0; blk < blocks; ++blk) { for (int i = 0; i < N; ++i) { a[i] = 1.0f; b[i] = 1.0f; } fx_reverb(&fx, &pp, a, b, N); last = a[N - 1]; }
+            return last;
+        };
+        FxParams p01{}; p01.reverb_on = true; p01.reverb_size = 0.5f; p01.reverb_damp = 0.0f; p01.reverb_width = 1.0f; p01.reverb_mix = 0.01f;
+        check(settle(p01, 3000) > 0.85f && settle(p01, 3000) < 1.15f, "reverb mix=0.01 → ≈ сухой");
 
-        fx_reverb_init(&fx, buf, nbuf);
-        FxParams hi1{}; hi1.reverb_on = true; hi1.reverb_size = 0.5f; hi1.reverb_damp = 0.3f; hi1.reverb_width = 1.0f; hi1.reverb_mix = 1.0f;
-        for (int blk = 0; blk < 3000; ++blk) { for (int i = 0; i < N; ++i) { a[i] = 1.0f; b[i] = 1.0f; } fx_reverb(&fx, &hi1, a, b, N); last = a[N - 1]; }
-        check(last > 0.3f && last < 3.5f, "reverb mix=1 → wet ограничен (DC-усиление гребёнок)");
+        FxParams sm{}; sm.reverb_on = true; sm.reverb_size = 0.3f; sm.reverb_damp = 0.0f; sm.reverb_width = 1.0f; sm.reverb_mix = 1.0f;
+        FxParams big = sm; big.reverb_size = 0.9f;                 // большая комната
+        const float wsmall = settle(sm, 3000);
+        const float wbig   = settle(big, 8000);                   // больше fb → дольше устаканивается
+        check(wsmall > 0.2f && wsmall < 1.0f, "reverb mix=1 малая комната → умеренный wet (~0.5)");
+        check(wbig   > 0.2f && wbig   < 1.0f, "reverb mix=1 большая комната → умеренный wet (НЕ громче малой)");
+        check(std::fabs(wbig - wsmall) < 0.25f, "уровень wet ~независим от size (fb-компенсация)");
     }
 
     // off → dry
