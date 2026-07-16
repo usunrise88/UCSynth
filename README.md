@@ -10,7 +10,8 @@
   (16 МБ flash / 8 МБ Octal PSRAM).
 - **Звук** — полноценный голос: band-limited wavetable (3 осц) → микшер → ZDF-фильтр →
   VCA, две ADSR, полифония до 8 голосов, glide → I2S → внешний ЦАП PCM5102.
-- **Управление** — GUI-пульт на Go (Windows) по USB CDC; позже энкодеры и тач.
+- **Управление** — GUI-пульт на Go/Gio (Windows) по USB CDC (`app/`, этап 2, v1 — ядро-контроллер);
+  позже энкодеры и тач.
 - **Экран** — отладочный OLED SSD1306 (I2C): осциллограф + параметры (временно, до ST7796).
 - **Ядра** — Core 0: аудио (I2S+DMA, DSP); Core 1: UI, дисплей, контролы, Serial.
 - **Сборка** — на Linux; **прошивка и отладка** — локально (Windows).
@@ -97,6 +98,7 @@ bash tools/run-host-tests.sh
 | [`docs/hardware-stage1-pcm5102.md`](docs/hardware-stage1-pcm5102.md) | Гайд: PCM5102 по I2S |
 | [`docs/hardware-oled-ssd1306.md`](docs/hardware-oled-ssd1306.md) | Гайд: OLED SSD1306 по I2C |
 | [`docs/serial-protocol.md`](docs/serial-protocol.md) | Контракт бинарного протокола |
+| [`docs/gui.md`](docs/gui.md) | GUI-контроллер (Go/Gio): сборка, запуск, структура |
 | [`docs/build-flash.md`](docs/build-flash.md) | Сборка и прошивка |
 | [`progress.md`](progress.md) | Что сделано, карта пинов, замеры |
 | [`tech-debt.md`](tech-debt.md) | Костыли и упрощения |
@@ -112,6 +114,7 @@ components/
                  wavetable / filter / env / voice / synth (полифония, glide)
   display/       отладочный OLED SSD1306 (Core 1)     ← вне спеки, до ST7796
   io/            периферия: I2C, энкодеры, тач        — этап 8+
+app/             GUI-контроллер на Go/Gio (Windows)   ← этап 2 (proto/serial/device/layout/ui)
 docs/            спецификация, гайды, контракты
 tools/           сборка, установка ESP-IDF, тестеры
 test/host/       host-тесты чистой логики (без железа)
