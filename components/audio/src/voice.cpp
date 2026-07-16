@@ -82,7 +82,11 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     float mod[MOD_DST_COUNT] = {0.0f};
     for (int s = 0; s < MOD_SLOTS; ++s) {
         const ModSlot &m = p->mtx[s];
-        if (m.src != MOD_SRC_NONE && m.dst != MOD_DST_NONE)
+        // Верхняя граница src/dst — страховка от OOB: кламп в control.cpp сейчас держит индексы в
+        // диапазоне, но enum помечен «дописывать перед _COUNT» — если кто-то добавит источник/приёмник
+        // и забудет поднять кламп-максимум, здесь не будет чтения/записи за пределами src[]/mod[].
+        if (m.src != MOD_SRC_NONE && m.dst != MOD_DST_NONE &&
+            m.src < MOD_SRC_COUNT && m.dst < MOD_DST_COUNT)
             mod[m.dst] += m.depth * src[m.src];   // все нули → тракт эквивалентен доматричному
     }
 

@@ -196,7 +196,8 @@ static void audio_task(void *arg)
                 L = L / (1.0f + fabsf(L));
                 R = R / (1.0f + fabsf(R));
             }
-            // Снимок формы (канал L, после клипа, до громкости) для дисплея.
+            // Снимок формы (канал L, до громкости) для дисплея: для нот — после софт-клипа,
+            // для тест-тона — сам эталон (клип обходится).
             s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(L * 127.0f);
             if (scope_pos >= AUDIO_SCOPE_LEN) {
                 s_scope_ready.store(scope_wr, std::memory_order_release);

@@ -44,6 +44,22 @@ var smokeParams = []proto.Param{
 	{ID: 27, Name: "mtx2_depth", Type: proto.TypeFloat, Min: -1, Max: 1, Cur: 0},
 }
 
+// TestUnlistedBlocksCatchAll pins the rack catch-all: a block with controls that isn't in rackCols
+// must surface (so it lands in the last column), never be silently dropped.
+func TestUnlistedBlocksCatchAll(t *testing.T) {
+	// all-listed blocks → no extras
+	listedOnly := map[string][]*control{"osc1": {nil}, "filter": {nil}, "modmatrix": {nil}, "reverb": {nil}}
+	if got := unlistedBlocks(listedOnly); len(got) != 0 {
+		t.Fatalf("all-listed → extras %v, want none", got)
+	}
+	// an unlisted block → returned (sorted), so rack() appends it rather than dropping it
+	mixed := map[string][]*control{"filter": {nil}, "zzz_future": {nil}, "aaa_future": {nil}}
+	got := unlistedBlocks(mixed)
+	if len(got) != 2 || got[0] != "aaa_future" || got[1] != "zzz_future" {
+		t.Fatalf("unlisted blocks → %v, want [aaa_future zzz_future]", got)
+	}
+}
+
 // TestRackLayoutSmoke lays out the panel rack with every control kind — a headless guard against
 // panics / nil-derefs, since the visual result can't be observed in CI.
 func TestRackLayoutSmoke(t *testing.T) {
