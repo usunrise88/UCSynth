@@ -22,6 +22,11 @@ void env_reset(Env *e)
     e->prev_gate = false;
 }
 
+void env_trigger(Env *e)
+{
+    e->stage = ENV_ATTACK;   // уровень сохраняем (анти-клик), prev_gate не трогаем
+}
+
 float env_tick(Env *e, const EnvParams *p, bool gate, float dt)
 {
     // Фронты gate: attack идёт ОТ текущего уровня (ретригер из release без щелчка вместе с VCA-лерпом).

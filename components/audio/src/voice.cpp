@@ -25,7 +25,7 @@ void voice_init(Voice *v, uint32_t seed)
     env_reset(&v->env_amp);
     env_reset(&v->env_flt);
     filter_reset(&v->filt);
-    v->note_hz    = 440.0f;
+    v->cur_note = v->target_note = 69.0f;   // A4
     v->note       = 255;
     v->key_down   = false;
     v->latch_held = false;
@@ -33,18 +33,28 @@ void voice_init(Voice *v, uint32_t seed)
     v->amp_prev   = 0.0f;
 }
 
-void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch)
+void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch, bool glide)
 {
     (void)vel;                          // velocity → глубина VCA: задел (3.1 без вел-чувствительности)
-    v->note     = note;
-    v->note_hz  = note_to_hz(note);
-    v->key_down = true;
-    if (latch) v->latch_held = true;    // защёлка дрона взводится по note-on
+    v->note        = note;
+    v->target_note = (float)note;
+    if (!glide) v->cur_note = (float)note;   // снап (свежий/idle голос или glide выкл)
+    v->key_down    = true;
+    if (latch) v->latch_held = true;         // защёлка дрона взводится по note-on
+    env_trigger(&v->env_amp);                // ретригер ОБЕИХ огибающих
+    env_trigger(&v->env_flt);
+}
+
+void voice_slide(Voice *v, uint8_t note, bool glide)
+{
+    v->note        = note;                   // legato: только цель высоты, без ретригера
+    v->target_note = (float)note;
+    if (!glide) v->cur_note = (float)note;
 }
 
 void voice_note_off(Voice *v, uint8_t note)
 {
-    if (note == v->note) v->key_down = false;   // моно: гасим только текущую ноту
+    if (note == v->note) v->key_down = false;   // гасим только текущую ноту
 }
 
 void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
@@ -52,10 +62,20 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     if (!p->latch) v->latch_held = false;       // снятие параметра latch отпускает дрон
     const bool gate = v->key_down || v->latch_held;
 
-    // control-rate: огибающие, коэфф. фильтра, инкременты фаз.
+    // control-rate: огибающие, скольжение высоты, коэфф. фильтра, инкременты фаз.
     const float dt    = (float)n / sr;
     const float env_a = env_tick(&v->env_amp, &p->amp_env, gate, dt);
     const float env_f = env_tick(&v->env_flt, &p->flt_env, gate, dt);
+
+    // Glide: cur_note одним полюсом к target в ЛОГ-высоте (муз. скольжение), затем → Гц.
+    if (p->glide_time < 1e-3f) {
+        v->cur_note = v->target_note;
+    } else {
+        const float c = 1.0f - expf(-4.6f * dt / p->glide_time);   // ~99% за glide_time
+        v->cur_note += (v->target_note - v->cur_note) * c;
+        if (fabsf(v->target_note - v->cur_note) < 0.01f) v->cur_note = v->target_note;
+    }
+    const float note_hz = 440.0f * exp2f((v->cur_note - 69.0f) * (1.0f / 12.0f));
 
     const float cutoff = p->cutoff_hz * exp2f(p->flt_env_amt * env_f * OCT);   // кламп — в filter_coef
     const FiltCoef fc  = filter_coef(cutoff, p->resonance, sr, p->filt_mode);
@@ -63,10 +83,17 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     float inc[3];
     int   mip[3];
     for (int j = 0; j < 3; ++j) {
-        const float f = v->note_hz * exp2f(p->osc[j].detune_semi * (1.0f / 12.0f));
+        const float f = note_hz * exp2f(p->osc[j].detune_semi * (1.0f / 12.0f));
         inc[j] = f / sr;
         mip[j] = p->lofi ? 0 : wavetable_mip(f);   // lofi = mip0 → алиасинг = фича (3.4)
     }
+
+    // CPU-скипы: не считаем осц-слот с нулевым уровнем (o0,o1 нужны при ring), шум/ring при нуле.
+    const bool need0 = p->osc[0].level > 0.0f || p->ring_level > 0.0f;
+    const bool need1 = p->osc[1].level > 0.0f || p->ring_level > 0.0f;
+    const bool need2 = p->osc[2].level > 0.0f;
+    const bool need_noise = p->noise_level > 0.0f;
+    const bool need_ring  = p->ring_level > 0.0f;
 
     float       amp      = v->amp_prev;
     const float amp_step = (env_a - v->amp_prev) / (float)n;   // лерп амплитуды по блоку (анти-зиппер)
@@ -74,13 +101,13 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     const float qinv     = 1.0f / q;
 
     for (int i = 0; i < n; ++i) {
-        const float o0 = wavetable_sample(p->osc[0].wave, v->phase[0], mip[0]);
-        const float o1 = wavetable_sample(p->osc[1].wave, v->phase[1], mip[1]);
-        const float o2 = wavetable_sample(p->osc[2].wave, v->phase[2], mip[2]);
+        const float o0 = need0 ? wavetable_sample(p->osc[0].wave, v->phase[0], mip[0]) : 0.0f;
+        const float o1 = need1 ? wavetable_sample(p->osc[1].wave, v->phase[1], mip[1]) : 0.0f;
+        const float o2 = need2 ? wavetable_sample(p->osc[2].wave, v->phase[2], mip[2]) : 0.0f;
 
         float mix = o0 * p->osc[0].level + o1 * p->osc[1].level + o2 * p->osc[2].level;
-        mix += noise_next(v->rng) * p->noise_level;
-        mix += (o0 * o1) * p->ring_level;          // ring mod = осц1×осц2 (raw, до уровней)
+        if (need_noise) mix += noise_next(v->rng) * p->noise_level;
+        if (need_ring)  mix += (o0 * o1) * p->ring_level;   // ring mod = осц1×осц2 (raw, до уровней)
 
         float y = filter_process(&v->filt, mix, &fc);
         y = y / (1.0f + fabsf(y));                  // soft-clip: headroom под сумму голосов (3.5)
@@ -93,10 +120,9 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
         out[i] = s;
 
         amp += amp_step;
-        for (int j = 0; j < 3; ++j) {
-            v->phase[j] += inc[j];
-            if (v->phase[j] >= 1.0f) v->phase[j] -= 1.0f;
-        }
+        v->phase[0] += inc[0]; if (v->phase[0] >= 1.0f) v->phase[0] -= 1.0f;   // фазы всегда двигаем
+        v->phase[1] += inc[1]; if (v->phase[1] >= 1.0f) v->phase[1] -= 1.0f;   //   (свободнобегущие)
+        v->phase[2] += inc[2]; if (v->phase[2] >= 1.0f) v->phase[2] -= 1.0f;
     }
     v->amp_prev = env_a;
 }

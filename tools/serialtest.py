@@ -139,6 +139,7 @@ def main():
     PID_CUTOFF, PID_RES, PID_FMODE = 20, 21, 22
     PID_FA, PID_FD, PID_FS, PID_FR, PID_FENV, PID_FLOOP = 23, 24, 25, 26, 27, 28
     PID_LOFI, PID_LOFI_BITS = 29, 30
+    PID_POLY, PID_GLIDE, PID_LEGATO = 31, 32, 33
 
     def setp(pid, val):
         return encode(bytes([SET]) + struct.pack("<Hf", pid, val))
@@ -253,6 +254,53 @@ def main():
     play("NOTE C4 (60) lo-fi 2 бит", 60, hold=1.2)
     step("lofi = 0 (назад)", setp(PID_LOFI, 0.0))
     step("  lofi_bits 16", setp(PID_LOFI_BITS, 16.0))
+
+    # --- этап 3.5: полифония + замер CPU ---
+    print("\n=== 3.5 полифония (замер CPU на -O2) ===")
+    step("SET waveform = 1 (saw — нагрузочная форма)", setp(PID_WAVE, 1.0))
+    step("poly_voices = 8", setp(PID_POLY, 8.0))
+
+    def chord(title, notes, hold=1.6):
+        """Взять аккорд, снять STAT под нагрузкой, отпустить."""
+        print(f"{title}:")
+        for nn in notes:
+            ser.write(encode(bytes([NOTE_ON, nn, 100])))
+        drain(ser, dec)
+        time.sleep(hold)
+        ser.write(encode(bytes([STAT])))     # cpu под нагрузкой (ноты ещё звучат)
+        drain(ser, dec)
+        for nn in notes:
+            ser.write(encode(bytes([NOTE_OFF, nn])))
+        drain(ser, dec, 0.2)
+        time.sleep(0.9)
+
+    chord("1 нота (C4) + STAT",              [60])
+    chord("аккорд 4 ноты (Cmaj7) + STAT",    [60, 64, 67, 71])
+    chord("аккорд 8 нот + STAT (потолок)",   [48, 52, 55, 59, 60, 64, 67, 71])
+
+    # --- этап 3.6: glide / legato ---
+    print("\n=== 3.6 glide / legato ===")
+    step("poly_voices = 1 (моно)", setp(PID_POLY, 1.0))
+    step("glide_time = 0.15 с", setp(PID_GLIDE, 0.15))
+    step("legato = 1 (моно-лид, без ретригера на перекрытии)", setp(PID_LEGATO, 1.0))
+    print("mono-glide лид C4→E4→G4→C5 (ноты внахлёст → скольжение высоты):")
+    for nn in (60, 64, 67, 72):
+        ser.write(encode(bytes([NOTE_ON, nn, 100]))); drain(ser, dec); time.sleep(0.5)
+    for nn in (60, 64, 67, 72):
+        ser.write(encode(bytes([NOTE_OFF, nn])))
+    drain(ser, dec, 0.2); time.sleep(1.0)
+
+    step("legato = 0", setp(PID_LEGATO, 0.0))
+    step("poly_voices = 4 (poly-glide)", setp(PID_POLY, 4.0))
+    print("poly-glide: ноты скользят от ближайшего звучащего голоса:")
+    for nn in (55, 59, 62, 67):
+        ser.write(encode(bytes([NOTE_ON, nn, 100]))); drain(ser, dec); time.sleep(0.45)
+    for nn in (55, 59, 62, 67):
+        ser.write(encode(bytes([NOTE_OFF, nn])))
+    drain(ser, dec, 0.2); time.sleep(1.0)
+
+    step("glide_time = 0 (вернуть)", setp(PID_GLIDE, 0.0))
+    step("poly_voices = 1 (вернуть моно)", setp(PID_POLY, 1.0))
 
     step("SET waveform = 0 (sine)", setp(PID_WAVE, 0.0))
     step("STAT (после всех демо — cpu/underruns)", encode(bytes([STAT])))

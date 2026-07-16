@@ -47,7 +47,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
 
 "$OUT4"
 
-# Тест voice (голос целиком: нота/release, headroom, lo-fi, latch).
+# Тест voice (голос целиком: нота/release, headroom, lo-fi, latch, glide).
 OUT5="$(mktemp -d)/voicetest"
 g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/audio/src" \
@@ -59,3 +59,17 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT5"
 
 "$OUT5"
+
+# Тест synth (полифония: аллокация/steal/reuse, моно-стек, legato, сумма).
+OUT6="$(mktemp -d)/synthtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_synth.cpp" \
+    "$ROOT/components/audio/src/synth.cpp" \
+    "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/filter.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT6"
+
+"$OUT6"
