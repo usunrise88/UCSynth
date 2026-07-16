@@ -14,11 +14,20 @@ import (
 
 const kbVelocity = 100
 
-// qwerty maps PC-keyboard names to semitone offsets from the keyboard's base note (piano-style
-// A W S E D F T G Y H U J K = C C# D D# E F F# G G# A A# B C).
-var qwerty = map[string]int{
-	"A": 0, "W": 1, "S": 2, "E": 3, "D": 4, "F": 5,
-	"T": 6, "G": 7, "Y": 8, "H": 9, "U": 10, "J": 11, "K": 12,
+// musicalTyping maps PC-keyboard key names → semitone offsets from the keyboard's base note,
+// using the FL Studio / GarageBand "musical typing" layout (all in the key of C). Two rows an
+// octave apart: the lower home rows (Z X C V B N M , . / = white, S D G H J L ; = black) and the
+// upper rows one octave up (Q W E R T Y U I O P = white, 2 3 5 6 7 9 0 = black). The rows overlap
+// by an octave — Q and "," both land on base+12 — exactly as FL Studio does it.
+var musicalTyping = map[string]int{
+	// lower row — white keys
+	"Z": 0, "X": 2, "C": 4, "V": 5, "B": 7, "N": 9, "M": 11, ",": 12, ".": 14, "/": 16,
+	// lower row — black keys
+	"S": 1, "D": 3, "G": 6, "H": 8, "J": 10, "L": 13, ";": 15,
+	// upper row — white keys (one octave above the lower row)
+	"Q": 12, "W": 14, "E": 16, "R": 17, "T": 19, "Y": 21, "U": 23, "I": 24, "O": 26, "P": 28,
+	// upper row — black keys
+	"2": 13, "3": 15, "5": 18, "6": 20, "7": 22, "9": 25, "0": 27,
 }
 
 var whiteSemis = []int{0, 2, 4, 5, 7, 9, 11}
@@ -182,15 +191,26 @@ func (k *Keyboard) blackColor(note int) color.NRGBA {
 }
 
 func (k *Keyboard) handleKeys(gtx C) {
-	// Keyboard tag = k. Register an event target over this area and hold focus.
+	// Register k as an event target and make it FOCUSABLE. A tag is only focusable if it
+	// registers a key.FocusFilter (io/input/router.go: FocusFilter → focusable=true); without it
+	// the router strips focus every frame, so a key.Filter{Focus:k} — which only matches while
+	// focused — never fires. That was the "keyboard plays nothing" bug. Re-grab focus whenever
+	// something else took it (there are no text editors to protect), so typing always plays.
 	event.Op(gtx.Ops, k)
-	gtx.Execute(key.FocusCmd{Tag: k})
+	if !gtx.Focused(k) {
+		gtx.Execute(key.FocusCmd{Tag: k})
+	}
 
-	filters := make([]event.Filter, 0, len(qwerty)+2)
-	for name := range qwerty {
+	filters := make([]event.Filter, 0, len(musicalTyping)+3)
+	filters = append(filters, key.FocusFilter{Target: k})
+	for name := range musicalTyping {
 		filters = append(filters, key.Filter{Focus: k, Name: key.Name(name)})
 	}
-	filters = append(filters, key.Filter{Focus: k, Name: "Z"}, key.Filter{Focus: k, Name: "X"})
+	// Up/Down arrows shift the octave (Z/X are notes now).
+	filters = append(filters,
+		key.Filter{Focus: k, Name: key.NameUpArrow},
+		key.Filter{Focus: k, Name: key.NameDownArrow},
+	)
 
 	for {
 		ev, ok := gtx.Event(filters...)
@@ -199,22 +219,21 @@ func (k *Keyboard) handleKeys(gtx C) {
 		}
 		ke, ok := ev.(key.Event)
 		if !ok {
-			continue
+			continue // e.g. key.FocusEvent from the FocusFilter
 		}
-		name := string(ke.Name)
-		if name == "Z" {
+		switch ke.Name {
+		case key.NameUpArrow:
+			if ke.State == key.Press {
+				k.OctaveUp()
+			}
+			continue
+		case key.NameDownArrow:
 			if ke.State == key.Press {
 				k.OctaveDown()
 			}
 			continue
 		}
-		if name == "X" {
-			if ke.State == key.Press {
-				k.OctaveUp()
-			}
-			continue
-		}
-		semi, ok := qwerty[name]
+		semi, ok := musicalTyping[string(ke.Name)]
 		if !ok {
 			continue
 		}
