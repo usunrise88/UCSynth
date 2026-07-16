@@ -26,6 +26,7 @@ func TestKeyboardDoesNotShadowButtonClicks(t *testing.T) {
 	var r input.Router
 	var btn widget.Clickable
 	kb := NewKeyboard(func(uint8, uint8) {}, func(uint8) {})
+	th := testTheme()
 
 	const W, H, btnH = 400, 300, 40
 	gtx := layout.Context{
@@ -44,7 +45,7 @@ func TestKeyboardDoesNotShadowButtonClicks(t *testing.T) {
 					return D{Size: image.Pt(gtx.Constraints.Max.X, btnH)}
 				})
 			}),
-			layout.Flexed(1, func(gtx C) D { return kb.Layout(gtx) }),
+			layout.Flexed(1, func(gtx C) D { return kb.Layout(gtx, th) }),
 		)
 	}
 
@@ -71,6 +72,7 @@ func TestKeyboardMouseNoteFires(t *testing.T) {
 	var r input.Router
 	gotNote := -1
 	kb := NewKeyboard(func(n, _ uint8) { gotNote = int(n) }, func(uint8) {})
+	th := testTheme()
 
 	const W, H = 400, 300
 	gtx := layout.Context{
@@ -83,7 +85,7 @@ func TestKeyboardMouseNoteFires(t *testing.T) {
 		gtx.Reset()
 		gtx.Metric = testMetric
 		gtx.Constraints = layout.Exact(image.Pt(W, H))
-		kb.Layout(gtx)
+		kb.Layout(gtx, th)
 	}
 
 	// Frame 1: establish the key areas.

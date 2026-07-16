@@ -4,7 +4,10 @@
 // the firmware's "a new param needs no client change" contract as far as possible.
 package layout
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // Block groups params in the UI. Display order is the slice order below.
 type Block struct {
@@ -60,10 +63,11 @@ var byName = map[string]Field{
 	// mixer
 	"noise_level": {"mixer", "Шум", "", nil},
 	"ring_level":  {"mixer", "Ring mod", "", nil},
-	// filter
+	// filter (flt_env_amt lives here in the UI — it's the filter's Env→Cutoff knob)
 	"cutoff":      {"filter", "Cutoff", "Гц", nil},
 	"resonance":   {"filter", "Резонанс", "", nil},
 	"filter_mode": {"filter", "Режим", "", filterLabels},
+	"flt_env_amt": {"filter", "Env→Cut", "", nil},
 	// VCA envelope
 	"amp_attack":  {"ampenv", "Attack", "с", nil},
 	"amp_decay":   {"ampenv", "Decay", "с", nil},
@@ -76,7 +80,6 @@ var byName = map[string]Field{
 	"flt_decay":   {"fltenv", "Decay", "с", nil},
 	"flt_sustain": {"fltenv", "Sustain", "", nil},
 	"flt_release": {"fltenv", "Release", "с", nil},
-	"flt_env_amt": {"fltenv", "Env→Cutoff", "", nil},
 	"flt_loop":    {"fltenv", "Loop", "", nil},
 	// lo-fi
 	"lofi":      {"lofi", "Lo-fi", "", nil},
@@ -102,6 +105,17 @@ func (f Field) EnumLabel(i int) string {
 		return f.EnumLabels[i]
 	}
 	return strconv.Itoa(i)
+}
+
+// IsEnvSlider reports whether a param should render as a vertical fader instead of a knob — the
+// ADSR stages (…_attack/_decay/_sustain/_release), matching the reference's envelope sliders.
+func IsEnvSlider(name string) bool {
+	for _, suf := range []string{"_attack", "_decay", "_sustain", "_release"} {
+		if strings.HasSuffix(name, suf) {
+			return true
+		}
+	}
+	return false
 }
 
 // BlockTitle returns the display title for a block key ("Прочее" for unknown keys).

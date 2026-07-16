@@ -66,5 +66,5 @@ app-cross:
 	cd app && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
 
 app-build:
-	cd app && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o build/ucsynth-controller.exe ./cmd/controller
+	cd app && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-H=windowsgui" -o build/ucsynth-controller.exe ./cmd/controller
 	@echo "→ app/build/ucsynth-controller.exe"

@@ -12,10 +12,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/app"
 
 echo "== go test (чистые пакеты + ui headless) =="
-go test ./proto/... ./device/... ./serial/... ./layout/... ./ui/...
+go test ./proto/... ./device/... ./serial/... ./layout/... ./patch/... ./seq/... ./midi/... ./ui/...
 
 echo "== кросс-сборка Windows (cgo-free, вкл. UI) =="
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o build/ucsynth-controller.exe ./cmd/controller
+# -H=windowsgui → GUI-подсистема PE: приложение не открывает консольное окно при старте.
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-H=windowsgui" -o build/ucsynth-controller.exe ./cmd/controller
 
 echo "OK: app — тесты зелёные, build/ucsynth-controller.exe собран"
