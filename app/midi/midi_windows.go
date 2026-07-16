@@ -2,19 +2,28 @@
 
 package midi
 
-// WinMM MIDI-input binding via stdlib syscall — no cgo, so the controller still cross-builds from
-// Linux. Untestable in this environment (needs a Windows host + a MIDI device); the pure decoder in
-// parse.go carries the logic that can be unit-tested.
+// WinMM MIDI-input via stdlib syscall — no cgo, so the controller still cross-builds from Linux.
+//
+// It uses CALLBACK_THREAD, NOT CALLBACK_FUNCTION: a foreign-thread C callback (what
+// CALLBACK_FUNCTION needs) hangs a cgo-free Go binary — syscall.NewCallback has no extra "m" for a
+// thread the runtime didn't create, so it blocks forever in lockextra (golang/go#20823, #9240).
+// Instead WinMM posts MM_MIM_DATA to a thread message queue, which we pump with GetMessage on a
+// goroutine locked to its own OS thread. Untestable here (needs a Windows host + a MIDI device);
+// the pure decoder in parse.go carries the unit-tested logic.
 
 import (
 	"errors"
-	"sync"
+	"runtime"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
 
 var (
-	winmm              = syscall.NewLazyDLL("winmm.dll")
+	winmm    = syscall.NewLazyDLL("winmm.dll")
+	user32   = syscall.NewLazyDLL("user32.dll")
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+
 	pMidiInGetNumDevs  = winmm.NewProc("midiInGetNumDevs")
 	pMidiInGetDevCapsW = winmm.NewProc("midiInGetDevCapsW")
 	pMidiInOpen        = winmm.NewProc("midiInOpen")
@@ -22,14 +31,20 @@ var (
 	pMidiInStop        = winmm.NewProc("midiInStop")
 	pMidiInReset       = winmm.NewProc("midiInReset")
 	pMidiInClose       = winmm.NewProc("midiInClose")
+
+	pGetCurrentThreadId = kernel32.NewProc("GetCurrentThreadId")
+	pGetMessageW        = user32.NewProc("GetMessageW")
+	pPeekMessageW       = user32.NewProc("PeekMessageW")
+	pPostThreadMessageW = user32.NewProc("PostThreadMessageW")
 )
 
 const (
-	callbackFunction = 0x00030000 // CALLBACK_FUNCTION
-	mimData          = 0x3C3      // MIM_DATA
+	callbackThread = 0x00020000 // CALLBACK_THREAD
+	mimData        = 0x3C3      // MM_MIM_DATA
+	wmQuit         = 0x0012     // WM_QUIT
+	pmNoRemove     = 0x0000
 )
 
-// midiInCapsW mirrors MIDIINCAPSW.
 type midiInCapsW struct {
 	wMid           uint16
 	wPid           uint16
@@ -38,129 +53,136 @@ type midiInCapsW struct {
 	dwSupport      uint32
 }
 
-// callback registry — the WinMM callback is a single fixed function pointer; dwCallbackInstance
-// carries an id back to the owning input so we can route messages without a per-open closure.
+// winMsg mirrors the Win32 MSG (x64 layout; Go inserts the same padding after `message`).
+type winMsg struct {
+	hwnd    uintptr
+	message uint32
+	wParam  uintptr
+	lParam  uintptr
+	time    uint32
+	ptX     int32
+	ptY     int32
+}
+
+// live diagnostics, surfaced in the MIDI status line so a failure is legible on the user's machine.
 var (
-	regMu   sync.Mutex
-	regMap  = map[uint32]*winInput{}
-	regNext uint32
-	cbOnce  sync.Once
-	cbPtr   uintptr
+	dbgCount atomic.Uint64
+	dbgLast  atomic.Uint32
 )
 
-func regAdd(w *winInput) uint32 {
-	regMu.Lock()
-	defer regMu.Unlock()
-	regNext++
-	id := regNext
-	regMap[id] = w
-	return id
-}
-
-func regDel(id uint32) {
-	regMu.Lock()
-	delete(regMap, id)
-	regMu.Unlock()
-}
-
-func regGet(id uint32) *winInput {
-	regMu.Lock()
-	defer regMu.Unlock()
-	return regMap[id]
-}
-
-// midiInProc is the WinMM callback (runs on a driver thread — keep it non-blocking).
-func midiInProc(hMidiIn, wMsg, dwInstance, dwParam1, dwParam2 uintptr) uintptr {
-	if uint32(wMsg) == mimData {
-		if w := regGet(uint32(dwInstance)); w != nil {
-			w.push(ParseWord(uint32(dwParam1)))
-		}
+// Debug reports how many MIDI messages arrived and the last raw packed message (hex), or "".
+func Debug() string {
+	n := dbgCount.Load()
+	if n == 0 {
+		return ""
 	}
-	return 0
+	return "сообщений " + utoa(n) + " · " + hex6(dbgLast.Load())
 }
 
 type winInput struct {
-	handle  uintptr
-	id      uint32
-	ch      chan Message
-	done    chan struct{}
-	handler func(Message)
-}
-
-func (w *winInput) push(m Message) {
-	select {
-	case w.ch <- m:
-	default: // drop under backpressure rather than stall the driver thread
-	}
+	handle uintptr
+	tid    uint32
+	done   chan struct{}
 }
 
 func (w *winInput) Close() error {
 	pMidiInStop.Call(w.handle)
 	pMidiInReset.Call(w.handle)
 	pMidiInClose.Call(w.handle)
-	close(w.done)
-	regDel(w.id)
+	pPostThreadMessageW.Call(uintptr(w.tid), wmQuit, 0, 0)
+	<-w.done
 	return nil
 }
 
-// List returns the WinMM input device names.
 func List() ([]string, error) {
 	n, _, _ := pMidiInGetNumDevs.Call()
 	var names []string
 	for i := uintptr(0); i < n; i++ {
 		var caps midiInCapsW
-		ret, _, _ := pMidiInGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps))
-		if ret != 0 {
-			continue
+		if ret, _, _ := pMidiInGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps)); ret == 0 {
+			names = append(names, syscall.UTF16ToString(caps.szPname[:]))
 		}
-		names = append(names, syscall.UTF16ToString(caps.szPname[:]))
 	}
 	return names, nil
 }
 
-// Open opens input device `index` and delivers decoded messages to handler until Close.
 func Open(index int, handler func(Message)) (Input, error) {
-	cbOnce.Do(func() { cbPtr = syscall.NewCallback(midiInProc) })
+	w := &winInput{done: make(chan struct{})}
+	tidCh := make(chan uint32, 1)
+	started := make(chan error, 1)
 
-	w := &winInput{ch: make(chan Message, 256), done: make(chan struct{}), handler: handler}
-	w.id = regAdd(w)
-
-	ret, _, _ := pMidiInOpen.Call(
-		uintptr(unsafe.Pointer(&w.handle)),
-		uintptr(index),
-		cbPtr,
-		uintptr(w.id),
-		callbackFunction,
-	)
-	if ret != 0 {
-		regDel(w.id)
-		return nil, errors.New("midiInOpen не удалось (код " + itoa(ret) + ")")
-	}
-	if ret, _, _ := pMidiInStart.Call(w.handle); ret != 0 {
-		pMidiInClose.Call(w.handle)
-		regDel(w.id)
-		return nil, errors.New("midiInStart не удалось")
-	}
-
-	// forward messages off the driver thread
 	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		defer close(w.done)
+
+		// Force this thread's message queue to exist before WinMM posts to it.
+		var msg winMsg
+		pPeekMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, pmNoRemove)
+		tid, _, _ := pGetCurrentThreadId.Call()
+		tidCh <- uint32(tid)
+
+		if err := <-started; err != nil {
+			return // open/start failed; nothing to pump
+		}
 		for {
-			select {
-			case <-w.done:
+			r, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
+			if int32(r) <= 0 { // 0 = WM_QUIT, -1 = error
 				return
-			case m := <-w.ch:
-				w.handler(m)
+			}
+			if msg.message == mimData {
+				raw := pickMidi(msg.wParam, msg.lParam, w.handle)
+				dbgCount.Add(1)
+				dbgLast.Store(raw)
+				handler(ParseWord(raw))
 			}
 		}
 	}()
+
+	w.tid = <-tidCh
+	ret, _, _ := pMidiInOpen.Call(
+		uintptr(unsafe.Pointer(&w.handle)),
+		uintptr(index),
+		uintptr(w.tid),
+		0,
+		callbackThread,
+	)
+	if ret != 0 {
+		started <- errors.New("open")
+		return nil, errors.New("midiInOpen не удалось (код " + utoa(uint64(ret)) + ")")
+	}
+	if r, _, _ := pMidiInStart.Call(w.handle); r != 0 {
+		pMidiInClose.Call(w.handle)
+		started <- errors.New("start")
+		return nil, errors.New("midiInStart не удалось (код " + utoa(uint64(r)) + ")")
+	}
+	started <- nil
 	return w, nil
 }
 
-func itoa(v uintptr) string {
+// pickMidi returns the packed short MIDI message from the posted MM_MIM_DATA. WinMM puts the device
+// handle in one of wParam/lParam and the data (dwParam1) in the other; sources disagree on which, so
+// we pick the one that ISN'T the known handle. Fallback: whichever looks like packed MIDI — 3 bytes
+// with a status byte (bit 7 set) in the low byte.
+func pickMidi(wp, lp, handle uintptr) uint32 {
+	if wp == handle {
+		return uint32(lp)
+	}
+	if lp == handle {
+		return uint32(wp)
+	}
+	looksMidi := func(v uint32) bool { return v>>24 == 0 && v&0x80 != 0 }
+	if looksMidi(uint32(lp)) {
+		return uint32(lp)
+	}
+	return uint32(wp)
+}
+
+func utoa(v uint64) string {
 	if v == 0 {
 		return "0"
 	}
-	var b [20]byte
+	var b [24]byte
 	i := len(b)
 	for v > 0 {
 		i--
@@ -168,4 +190,9 @@ func itoa(v uintptr) string {
 		v /= 10
 	}
 	return string(b[i:])
+}
+
+func hex6(v uint32) string {
+	const d = "0123456789ABCDEF"
+	return string([]byte{d[(v>>20)&0xF], d[(v>>16)&0xF], d[(v>>12)&0xF], d[(v>>8)&0xF], d[(v>>4)&0xF], d[v&0xF]})
 }

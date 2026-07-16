@@ -45,13 +45,17 @@ func (c *Controller) toggleMidi(i int) {
 	c.midiMsg = "MIDI ← " + c.midiNames[i]
 }
 
-// onMidi runs on the MIDI driver-forwarding goroutine; route notes through the race-safe sink.
+// onMidi runs on the MIDI message-pump goroutine; route notes through the race-safe sink and ask
+// the UI to repaint (so the live message counter/last-message diagnostic updates on each note).
 func (c *Controller) onMidi(m midi.Message) {
 	switch m.Kind {
 	case midi.NoteOn:
 		c.sink.on(m.Data1, m.Data2)
 	case midi.NoteOff:
 		c.sink.off(m.Data1)
+	}
+	if c.invalidate != nil {
+		c.invalidate()
 	}
 }
 
@@ -83,9 +87,15 @@ func (c *Controller) layoutMidiRow(gtx C) D {
 			}),
 		)
 	}
+	status := c.midiMsg
+	if c.midiOpen >= 0 {
+		if d := midi.Debug(); d != "" {
+			status += " · " + d
+		}
+	}
 	children = append(children,
 		layout.Flexed(1, func(gtx C) D { return D{Size: gtx.Constraints.Min} }),
-		layout.Rigid(label(c.th, unit.Sp(12), c.midiMsg, colFaint).Layout),
+		layout.Rigid(label(c.th, unit.Sp(12), status, colFaint).Layout),
 	)
 	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
 }

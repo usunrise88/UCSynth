@@ -11,3 +11,6 @@ func List() ([]string, error) { return nil, nil }
 func Open(index int, handler func(Message)) (Input, error) {
 	return nil, errors.New("MIDI-вход поддерживается только на Windows")
 }
+
+// Debug has no diagnostics off Windows.
+func Debug() string { return "" }
