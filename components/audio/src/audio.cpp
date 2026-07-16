@@ -109,6 +109,11 @@ static void build_synth_params(SynthParams *sp)
     sp->fx.delay_feedback = get_param(PARAM_DELAY_FEEDBACK);
     sp->fx.delay_damp     = get_param(PARAM_DELAY_DAMP);
     sp->fx.delay_mix      = get_param(PARAM_DELAY_MIX);
+    sp->fx.reverb_on      = get_param(PARAM_REVERB_ON) > 0.5f;
+    sp->fx.reverb_size    = get_param(PARAM_REVERB_SIZE);
+    sp->fx.reverb_damp    = get_param(PARAM_REVERB_DAMP);
+    sp->fx.reverb_width   = get_param(PARAM_REVERB_WIDTH);
+    sp->fx.reverb_mix     = get_param(PARAM_REVERB_MIX);
 }
 
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
@@ -172,15 +177,18 @@ static void audio_task(void *arg)
             synth_render(&sp, (float)SAMPLE_RATE, fbuf, BLOCK_FRAMES);   // сумма активных голосов
         }
 
-        // Хвост эффектов: overdrive (моно) → split L/R → delay (стерео) → пер-канальный софт-клип →
-        // scope(L) → громкость → int16 стерео. Все FX off → L=R=моно (совместимость с доэффектным
-        // трактом). Тест-тон обходит FX и клип (чистый эталон, mono в оба канала).
+        // Хвост эффектов: overdrive (моно) → split L/R → delay (стерео) → reverb (стерео) →
+        // пер-канальный софт-клип → scope(L) → громкость → int16 стерео. Все FX off → L=R=моно
+        // (совместимость с доэффектным трактом). Тест-тон обходит FX и клип (чистый эталон, mono в оба).
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             float m = fbuf[i];
             if (!test_on) m = fx_overdrive(m, &sp.fx);   // до split (может выйти за ±1 — клип ниже)
             chL[i] = chR[i] = m;
         }
-        if (!test_on) fx_delay(&s_fx, &sp.fx, chL, chR, BLOCK_FRAMES, (float)SAMPLE_RATE);
+        if (!test_on) {
+            fx_delay(&s_fx, &sp.fx, chL, chR, BLOCK_FRAMES, (float)SAMPLE_RATE);
+            fx_reverb(&s_fx, &sp.fx, chL, chR, BLOCK_FRAMES);   // этап 5.3 — последний в цепи
+        }
 
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             float L = chL[i], R = chR[i];
@@ -294,6 +302,19 @@ void audio_init(void)
         if (dl_r) heap_caps_free(dl_r);
         fx_delay_init(&s_fx, nullptr, nullptr, 0);   // delay отключён, тракт работает без него
         ESP_LOGE(TAG, "FX delay: не выделить PSRAM (%d КБ) — delay отключён", (int)(2 * dl_len * sizeof(float) / 1024));
+    }
+
+    // FX reverb (Freeverb, этап 5.3) — линии гребёнок/allpass одним блоком в PSRAM (~110 КБ). Не вышло →
+    // fx_reverb_init с nullptr отключает реверб (тракт работает). Reverb — потолок CPU (замер на железе).
+    const int rv_n = fx_reverb_bufsize();
+    float *rv_buf = (float *)heap_caps_malloc(rv_n * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (rv_buf) {
+        fx_reverb_init(&s_fx, rv_buf, rv_n);
+        ESP_LOGI(TAG, "FX reverb: буферы в PSRAM %d КБ (Freeverb 8×гребёнка+4×allpass/канал)",
+                 (int)(rv_n * sizeof(float) / 1024));
+    } else {
+        fx_reverb_init(&s_fx, nullptr, 0);           // reverb отключён
+        ESP_LOGE(TAG, "FX reverb: не выделить PSRAM (%d КБ) — reverb отключён", (int)(rv_n * sizeof(float) / 1024));
     }
 
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).

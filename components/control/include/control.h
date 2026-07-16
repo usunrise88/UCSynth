@@ -121,6 +121,12 @@ typedef enum {
     PARAM_DELAY_FEEDBACK = 78, // обратная связь 0..0.95
     PARAM_DELAY_DAMP     = 79, // затухание ВЧ в ОС 0..1
     PARAM_DELAY_MIX      = 80, // wet/dry 0..1
+    // --- этап 5.3: reverb (Freeverb, PSRAM) ---
+    PARAM_REVERB_ON      = 81, // reverb вкл/вык (bool)
+    PARAM_REVERB_SIZE    = 82, // размер комнаты 0..1
+    PARAM_REVERB_DAMP    = 83, // затухание ВЧ 0..1
+    PARAM_REVERB_WIDTH   = 84, // стерео-ширина 0..1
+    PARAM_REVERB_MIX     = 85, // wet/dry 0..1
     PARAM_COUNT
 } param_id_t;
 

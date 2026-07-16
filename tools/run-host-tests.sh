@@ -139,3 +139,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT12"
 
 "$OUT12"
+
+# Тест reverb (этап 5.3 — Freeverb: затухание хвоста, устойчивость, байпас, гард буфера).
+OUT13="$(mktemp -d)/reverbtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_reverb.cpp" \
+    "$ROOT/components/audio/src/fx.cpp" \
+    -o "$OUT13"
+
+"$OUT13"

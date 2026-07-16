@@ -31,6 +31,7 @@ var Blocks = []Block{
 	{"modmatrix", "Мод-матрица"},
 	{"overdrive", "Overdrive"},
 	{"delay", "Delay"},
+	{"reverb", "Reverb"},
 	{"lofi", "Lo-fi"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
@@ -124,6 +125,12 @@ var byName = map[string]Field{
 	"delay_feedback": {"delay", "Feedback", "", nil},
 	"delay_damp":     {"delay", "Damp", "", nil},
 	"delay_mix":      {"delay", "Mix", "", nil},
+	// этап 5.3 — reverb (Freeverb)
+	"reverb_on":    {"reverb", "Вкл", "", nil},
+	"reverb_size":  {"reverb", "Size", "", nil},
+	"reverb_damp":  {"reverb", "Damp", "", nil},
+	"reverb_width": {"reverb", "Width", "", nil},
+	"reverb_mix":   {"reverb", "Mix", "", nil},
 	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
