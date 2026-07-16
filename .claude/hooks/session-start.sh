@@ -13,3 +13,6 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 "$CLAUDE_PROJECT_DIR/tools/setup-esp-idf.sh"
+
+# Go для проверки GUI-контроллера (app/). Не критично для прошивки → не валим сессию при сбое.
+"$CLAUDE_PROJECT_DIR/tools/setup-go.sh" || echo "[hook] setup-go не сработал (не критично)"

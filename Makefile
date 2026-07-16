@@ -11,10 +11,17 @@
 #
 # PORT: Windows — COMx, Linux — /dev/ttyACM0 (нативный USB) или /dev/ttyUSB0 (UART-мост).
 
+#   make host-test  — host-тесты прошивки (чистая DSP-логика, g++)
+#   make app-test   — тесты GUI-контроллера (app/): чистые пакеты + кросс-vet Windows
+#   make app-build  — собрать app/build/ucsynth-controller.exe (Windows, из Linux)
+#
+# PORT: Windows — COMx, Linux — /dev/ttyACM0 (нативный USB) или /dev/ttyUSB0 (UART-мост).
+
 PORT ?= /dev/ttyACM0
 BUILD := ./tools/build.sh
 
-.PHONY: setup build menuconfig size merge clean fullclean flash monitor flash-monitor
+.PHONY: setup build menuconfig size merge clean fullclean flash monitor flash-monitor \
+        host-test app-test app-cross app-build
 
 setup:
 	./tools/setup-esp-idf.sh
@@ -46,3 +53,18 @@ monitor:
 
 flash-monitor:
 	$(BUILD) -p $(PORT) flash monitor
+
+# --- Хост-тесты и GUI-контроллер (без железа) ---
+
+host-test:
+	bash ./tools/run-host-tests.sh
+
+app-test:
+	bash ./tools/run-app-tests.sh
+
+app-cross:
+	cd app && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+
+app-build:
+	cd app && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o build/ucsynth-controller.exe ./cmd/controller
+	@echo "→ app/build/ucsynth-controller.exe"
