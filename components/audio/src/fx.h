@@ -56,8 +56,8 @@ struct FxState {
 // Привязать кольцевые буферы delay (len сэмплов каждый), обнулить их и сбросить состояние.
 void fx_delay_init(FxState *fx, float *buf_l, float *buf_r, int len);
 
-// Стерео delay in-place на n сэмплах. off/нет буфера → dry (l/r без изменений). L читается раньше R
-// (стерео-ширина). feedback с one-pole damp; денормалы флашатся (LX7 медленно их считает).
+// Стерео ping-pong delay in-place на n сэмплах. off/нет буфера → dry. Единое время; перекрёстная ОС →
+// одно эхо на delay_time, скачущее L↔R (mono-совместимо). feedback с one-pole damp; денормалы флашатся.
 void fx_delay(FxState *fx, const FxParams *p, float *l, float *r, int n, float sr);
 
 // Сколько float-сэмплов нужно под все линии задержки реверба (для аллокации одного PSRAM-блока).

@@ -7,6 +7,7 @@
 // Генерация быстрая: sin(kθ) считаем рекуррентой Чебышёва (2·cosθ·s−s'), а не K вызовами sinf.
 // Чистый DSP без ESP-IDF → host-тестируем (test/host/test_wavetable.cpp).
 #include "wavetable.h"
+#include "dsp_hot.h"
 #include <cmath>
 
 namespace {
@@ -123,7 +124,7 @@ int wavetable_mip(float freq_hz)
     return m;
 }
 
-float wavetable_sample(uint8_t w, float phase, int mip)
+float AUDIO_HOT wavetable_sample(uint8_t w, float phase, int mip)
 {
     if (w >= WAVE_COUNT) w = WAVE_SINE;
     if (mip < 0)              mip = 0;
@@ -139,7 +140,7 @@ float wavetable_sample(uint8_t w, float phase, int mip)
     return t[i] + (t[i + 1] - t[i]) * frac;                      // t[L] — guard-семпл
 }
 
-float wavetable_sample_morph(float pos, float phase, int mip)
+float AUDIO_HOT wavetable_sample_morph(float pos, float phase, int mip)
 {
     if (pos < 0.0f)                        pos = 0.0f;
     else if (pos > (float)(WAVE_COUNT - 1)) pos = (float)(WAVE_COUNT - 1);

@@ -1,5 +1,6 @@
 #include "voice.h"
 #include "wavetable.h"
+#include "dsp_hot.h"
 #include <cmath>
 
 namespace {
@@ -60,7 +61,7 @@ void voice_note_off(Voice *v, uint8_t note)
     if (note == v->note) v->key_down = false;   // гасим только текущую ноту
 }
 
-void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
+void AUDIO_HOT voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
 {
     if (!p->latch) v->latch_held = false;       // снятие параметра latch отпускает дрон
     const bool gate = v->key_down || v->latch_held;
