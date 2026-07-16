@@ -1,6 +1,7 @@
-// Package ui is the Gio front-end: connection bar, LIST-driven parameter blocks, on-screen
-// keyboard, and live metrics. It reads an immutable device.Snapshot each frame and sends edits
-// back through the device (which throttles/prioritizes). Imports Gio; verified via Windows cross-build.
+// Package ui is the Gio front-end: a fixed VST-style panel rack built from the LIST-driven parameter
+// registry, an on-screen keyboard, and a live connection/metrics bar. It reads an immutable
+// device.Snapshot each frame and sends edits back through the device (which throttles/prioritizes).
+// Verified via Windows cross-build; input routing exercised by headless tests.
 package ui
 
 import (
@@ -10,6 +11,7 @@ import (
 
 	"gioui.org/font/gofont"
 	"gioui.org/layout"
+	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
 	"gioui.org/text"
@@ -39,25 +41,29 @@ type Controller struct {
 	panicBtn   widget.Clickable
 	toneOffBtn widget.Clickable
 
-	// parameter blocks
+	// parameter rack
 	kb       *Keyboard
 	controls []*control
 	builtN   int
 	plist    widget.List
 }
 
-// New builds the controller. invalidate (window.Invalidate) is called by the device when the
-// model changes so the UI redraws.
+// rackCols assigns parameter blocks to the three VST columns (mockup layout). Any block not listed
+// (only "misc" today, the LIST-driven fallback) is appended to the last column.
+var rackCols = [][]string{
+	{"osc1", "osc2", "osc3", "mixer"},
+	{"filter", "ampenv", "fltenv"},
+	{"global", "lofi", "debug", "misc"},
+}
+var colWeights = []float32{1, 1.15, 1}
+
+// New builds the controller. invalidate (window.Invalidate) is called by the device when the model
+// changes so the UI redraws.
 func New(invalidate func()) *Controller {
 	c := &Controller{invalidate: invalidate, builtN: -1}
 	c.th = material.NewTheme()
 	c.th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
-	c.th.Palette = material.Palette{
-		Bg:         rgb(0x1E1F24),
-		Fg:         rgb(0xE6E6E8),
-		ContrastBg: rgb(0x4C9A5A),
-		ContrastFg: rgb(0xFFFFFF),
-	}
+	c.th.Palette = material.Palette{Bg: colBg, Fg: colTxt, ContrastBg: colAccent, ContrastFg: rgb(0xFFFFFF)}
 	c.plist.Axis = layout.Vertical
 	c.kb = NewKeyboard(
 		func(n, v uint8) {
@@ -125,13 +131,10 @@ func (c *Controller) disconnect() {
 
 // Layout renders one frame.
 func (c *Controller) Layout(gtx C) D {
-	paint.FillShape(gtx.Ops, c.th.Palette.Bg, clip.Rect{Max: gtx.Constraints.Max}.Op())
+	paint.FillShape(gtx.Ops, colBg, clip.Rect{Max: gtx.Constraints.Max}.Op())
 
-	// Read widget clicks BEFORE laying out. material.Button.Layout → Clickable.layout drains
-	// every pending click in a loop and discards it (widget/button.go), so a separate Clicked()
-	// query must run first or it always sees an empty queue. The events themselves were routed
-	// against last frame's input tree, so reading them here (before this frame's areas are
-	// recorded) is correct.
+	// Read widget clicks BEFORE laying out — Clickable.Layout drains pending clicks, so Clicked()
+	// must be queried first. Events come from last frame's input tree, so this is correct.
 	c.handleButtons(gtx)
 
 	var snap device.Snapshot
@@ -140,14 +143,16 @@ func (c *Controller) Layout(gtx C) D {
 		c.syncControls(snap)
 	}
 
-	in := layout.UniformInset(unit.Dp(10))
-	return in.Layout(gtx, func(gtx C) D {
+	return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			layout.Rigid(func(gtx C) D { return c.layoutConnBar(gtx, snap) }),
-			layout.Rigid(func(gtx C) D { return c.layoutMetrics(gtx, snap) }),
+			layout.Rigid(func(gtx C) D { return c.layoutTopBar(gtx, snap) }),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+			layout.Flexed(1, func(gtx C) D { return c.layoutRack(gtx) }),
 			layout.Rigid(func(gtx C) D { return c.layoutToneBanner(gtx, snap) }),
-			layout.Flexed(1, func(gtx C) D { return c.layoutParams(gtx) }),
-			layout.Rigid(func(gtx C) D { return c.kb.Layout(gtx) }),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+			layout.Rigid(func(gtx C) D { return card(gtx, colLine, colPanel, func(gtx C) D { return c.kb.Layout(gtx, c.th) }) }),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+			layout.Rigid(c.layoutFooter),
 		)
 	})
 }
@@ -188,69 +193,228 @@ func (c *Controller) syncControls(snap device.Snapshot) {
 		c.builtN = len(snap.Params)
 		return
 	}
-	for i, p := range snap.Params { // refresh live values into existing widgets
+	for i, p := range snap.Params {
 		if i < len(c.controls) {
 			c.controls[i].p = p
 		}
 	}
 }
 
-func (c *Controller) layoutConnBar(gtx C, snap device.Snapshot) D {
-	set := func(gtx C, w layout.Widget) layout.FlexChild {
-		return layout.Rigid(func(gtx C) D { return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, w) })
-	}
-	children := []layout.FlexChild{
-		set(gtx, material.Button(c.th, &c.refreshBtn, "Порты").Layout),
-	}
-	for i := range c.portBtns {
-		i := i
-		children = append(children, set(gtx, func(gtx C) D {
-			b := material.Button(c.th, &c.portBtns[i], c.ports[i].Label)
-			b.TextSize = unit.Sp(13)
-			if c.ports[i].Name == c.selPort {
-				b.Background = c.th.Palette.ContrastBg
-			} else {
-				b.Background = rgb(0x3A3C44)
-			}
-			return b.Layout(gtx)
-		}))
-	}
-	label := "Подключить"
-	if c.dev != nil {
-		label = "Отключить"
-	}
-	children = append(children,
-		layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
-		set(gtx, material.Button(c.th, &c.panicBtn, "Panic").Layout),
-		set(gtx, material.Button(c.th, &c.connectBtn, label).Layout),
-	)
-	row := layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
+// --- top bar ---
 
-	status := c.status
-	if c.dev != nil {
-		status = "● " + snap.State.String()
-		if snap.Err != nil {
-			status += ": " + snap.Err.Error()
+func (c *Controller) layoutTopBar(gtx C, snap device.Snapshot) D {
+	return card(gtx, colLine, colPanel, func(gtx C) D {
+		children := []layout.FlexChild{
+			layout.Rigid(func(gtx C) D {
+				l := label(c.th, unit.Sp(13), "UC SYNTH", colMuted)
+				l.Font.Weight = 600
+				return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, l.Layout)
+			}),
+			layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.refreshBtn, "Порты", false, false, false) }),
 		}
-	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx C) D { return row }),
-		layout.Rigid(func(gtx C) D {
-			return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx,
-				material.Caption(c.th, status).Layout)
-		}),
-	)
+		for i := range c.portBtns {
+			i := i
+			children = append(children,
+				layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+				layout.Rigid(func(gtx C) D {
+					sel := i < len(c.ports) && c.ports[i].Name == c.selPort
+					return c.portBtns[i].Layout(gtx, func(gtx C) D {
+						return segPill(sel).draw(gtx, c.th, c.ports[i].Label)
+					})
+				}))
+		}
+		connLabel := "Подключить"
+		if c.dev != nil {
+			connLabel = "Отключить"
+		}
+		children = append(children,
+			layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+			layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.connectBtn, connLabel, true, false, false) }),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+			layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.panicBtn, "Panic", false, true, false) }),
+			layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
+			layout.Rigid(func(gtx C) D { return c.metricsText(gtx, snap) }),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
+			layout.Rigid(func(gtx C) D { return c.statusDot(gtx, snap) }),
+		)
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
+	})
 }
 
-func (c *Controller) layoutMetrics(gtx C, snap device.Snapshot) D {
-	if c.dev == nil || snap.State != device.Synced {
+func (c *Controller) obtn(gtx C, b *widget.Clickable, lbl string, accent, danger, active bool) D {
+	return b.Layout(gtx, func(gtx C) D { return btnPill(active, accent, danger).draw(gtx, c.th, lbl) })
+}
+
+func (c *Controller) metricsText(gtx C, snap device.Snapshot) D {
+	if c.dev == nil {
+		return label(c.th, unit.Sp(12.5), c.status, colMuted).Layout(gtx)
+	}
+	if snap.State != device.Synced {
 		return D{}
 	}
 	s := snap.Stat
-	txt := fmt.Sprintf("CPU %.1f%%    underruns %d    heap %d КБ    uptime %d с",
-		float64(s.CPUPermille)/10, s.Underruns, s.Heap/1024, s.UptimeMS/1000)
-	return card(gtx, c.th, func(gtx C) D { return material.Body2(c.th, txt).Layout(gtx) })
+	txt := fmt.Sprintf("CPU %.1f%%     underruns %d     heap %.1fМ     up %dс",
+		float64(s.CPUPermille)/10, s.Underruns, float64(s.Heap)/1048576, s.UptimeMS/1000)
+	return label(c.th, unit.Sp(12.5), txt, colMuted).Layout(gtx)
 }
+
+func (c *Controller) statusDot(gtx C, snap device.Snapshot) D {
+	col, txt := colFaint, "не подключено"
+	if c.dev != nil {
+		switch snap.State {
+		case device.Synced:
+			col, txt = colOk, "Synced"
+		case device.Connecting:
+			col, txt = colWarn, "Connecting"
+		default:
+			col, txt = colErr, snap.State.String()
+		}
+		if snap.Err != nil {
+			txt = snap.State.String() + ": " + snap.Err.Error()
+		}
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(func(gtx C) D { return ledDot(gtx, col) }),
+		layout.Rigid(layout.Spacer{Width: unit.Dp(7)}.Layout),
+		layout.Rigid(label(c.th, unit.Sp(12.5), txt, colMuted).Layout),
+	)
+}
+
+func ledDot(gtx C, col color.NRGBA) D {
+	d := gtx.Dp(9)
+	paint.FillShape(gtx.Ops, col, clip.Ellipse{Max: image.Pt(d, d)}.Op(gtx.Ops))
+	return D{Size: image.Pt(d, d)}
+}
+
+// --- rack ---
+
+func (c *Controller) layoutRack(gtx C) D {
+	if c.dev == nil {
+		return centerMsg(gtx, c.th, "Не подключено. Выбери порт и нажми «Подключить».")
+	}
+	if len(c.controls) == 0 {
+		return centerMsg(gtx, c.th, "Загрузка реестра параметров…")
+	}
+	return material.List(c.th, &c.plist).Layout(gtx, 1, func(gtx C, _ int) D { return c.rack(gtx) })
+}
+
+func (c *Controller) rack(gtx C) D {
+	byBlock := map[string][]*control{}
+	for _, ct := range c.controls {
+		byBlock[ct.fld.Block] = append(byBlock[ct.fld.Block], ct)
+	}
+	cols := make([]layout.FlexChild, 0, len(rackCols))
+	for ci, keys := range rackCols {
+		ci, keys := ci, keys
+		cols = append(cols, layout.Flexed(colWeights[ci], func(gtx C) D {
+			ins := layout.Inset{}
+			if ci > 0 {
+				ins.Left = unit.Dp(6)
+			}
+			if ci < len(rackCols)-1 {
+				ins.Right = unit.Dp(6)
+			}
+			return ins.Layout(gtx, func(gtx C) D { return c.column(gtx, keys, byBlock) })
+		}))
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Start}.Layout(gtx, cols...)
+}
+
+func (c *Controller) column(gtx C, keys []string, byBlock map[string][]*control) D {
+	var items []layout.FlexChild
+	first := true
+	for _, k := range keys {
+		cs := byBlock[k]
+		if len(cs) == 0 {
+			continue
+		}
+		k, cs := k, cs
+		if !first {
+			items = append(items, layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout))
+		}
+		first = false
+		items = append(items, layout.Rigid(func(gtx C) D {
+			return vstPanel(gtx, c.th, blk.BlockTitle(k), func(gtx C) D { return c.panelBody(gtx, cs) })
+		}))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
+}
+
+func (c *Controller) panelBody(gtx C, cs []*control) D {
+	var segs, knobs, sliders, steppers, toggles []*control
+	for _, ct := range cs {
+		switch ct.kind {
+		case kindSeg:
+			segs = append(segs, ct)
+		case kindKnob:
+			knobs = append(knobs, ct)
+		case kindSlider:
+			sliders = append(sliders, ct)
+		case kindStepper:
+			steppers = append(steppers, ct)
+		case kindToggle:
+			toggles = append(toggles, ct)
+		}
+	}
+	var rows []layout.FlexChild
+	first := true
+	sec := func(w layout.Widget) {
+		if !first {
+			rows = append(rows, layout.Rigid(layout.Spacer{Height: unit.Dp(11)}.Layout))
+		}
+		first = false
+		rows = append(rows, layout.Rigid(w))
+	}
+	for _, ct := range segs {
+		ct := ct
+		sec(func(gtx C) D { return ct.segField(gtx, c.th, c.setParam) })
+	}
+	if len(knobs) > 0 {
+		sec(func(gtx C) D { return c.cellRow(gtx, knobs, false) })
+	}
+	if len(sliders) > 0 {
+		sec(func(gtx C) D { return c.cellRow(gtx, sliders, true) })
+	}
+	for _, ct := range steppers {
+		ct := ct
+		sec(func(gtx C) D { return ct.stepperCell(gtx, c.th, c.setParam) })
+	}
+	if len(toggles) > 0 {
+		sec(func(gtx C) D { return c.toggleRow(gtx, toggles) })
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
+}
+
+func (c *Controller) cellRow(gtx C, cs []*control, slider bool) D {
+	children := make([]layout.FlexChild, 0, len(cs)*2)
+	for i, ct := range cs {
+		ct := ct
+		if i > 0 {
+			children = append(children, layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout))
+		}
+		children = append(children, layout.Rigid(func(gtx C) D {
+			if slider {
+				return ct.sliderCell(gtx, c.th, c.setParam)
+			}
+			return ct.knobCell(gtx, c.th, c.setParam)
+		}))
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Start}.Layout(gtx, children...)
+}
+
+func (c *Controller) toggleRow(gtx C, cs []*control) D {
+	children := make([]layout.FlexChild, 0, len(cs)*2)
+	for i, ct := range cs {
+		ct := ct
+		if i > 0 {
+			children = append(children, layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout))
+		}
+		children = append(children, layout.Rigid(func(gtx C) D { return ct.toggleCell(gtx, c.th, c.setParam) }))
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
+}
+
+// --- tone banner + footer ---
 
 func (c *Controller) layoutToneBanner(gtx C, snap device.Snapshot) D {
 	if c.dev == nil {
@@ -260,34 +424,25 @@ func (c *Controller) layoutToneBanner(gtx C, snap device.Snapshot) D {
 	if !ok || p.Cur <= 0.5 {
 		return D{}
 	}
-	return card(gtx, c.th, func(gtx C) D {
-		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-			layout.Flexed(1, material.Body2(c.th, "Тест-тон включён — ноты не слышны.").Layout),
-			layout.Rigid(material.Button(c.th, &c.toneOffBtn, "Выключить тон").Layout),
-		)
+	return layout.Inset{Top: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
+		return card(gtx, colWarn, rgba(0xF0B03C, 0x1E), func(gtx C) D {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, label(c.th, unit.Sp(13), "Тест-тон включён — ноты не слышны.", colWarn).Layout),
+				layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.toneOffBtn, "Выключить тон", false, false, false) }),
+			)
+		})
 	})
 }
 
-func (c *Controller) layoutParams(gtx C) D {
-	if c.dev == nil {
-		return center(gtx, material.Body1(c.th, "Не подключено. Выбери порт и нажми «Подключить».").Layout)
-	}
-	items := c.items()
-	if len(items) == 0 {
-		return center(gtx, material.Body1(c.th, "Загрузка реестра параметров…").Layout)
-	}
-	return material.List(c.th, &c.plist).Layout(gtx, len(items), func(gtx C, i int) D {
-		it := items[i]
-		if it.ctrl == nil { // block header
-			return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
-				h := material.Subtitle1(c.th, it.title)
-				h.Color = c.th.Palette.ContrastBg
-				return h.Layout(gtx)
-			})
-		}
-		return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx C) D {
-			return it.ctrl.row(gtx, c.th, c.setParam)
-		})
+func (c *Controller) layoutFooter(gtx C) D {
+	return card(gtx, colLine, colPanel, func(gtx C) D {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(label(c.th, unit.Sp(11), "ПАТЧИ", colMuted).Layout),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+			layout.Flexed(1, label(c.th, unit.Sp(12),
+				"JSON-дерево · импорт/экспорт · MIDI-вход · piano-roll · графики истории STAT — следующий слой",
+				colFaint).Layout),
+		)
 	})
 }
 
@@ -297,43 +452,23 @@ func (c *Controller) setParam(id uint16, val float32) {
 	}
 }
 
-type listItem struct {
-	title string
-	ctrl  *control
-}
-
-func (c *Controller) items() []listItem {
-	byBlock := map[string][]*control{}
-	for _, ct := range c.controls {
-		byBlock[ct.fld.Block] = append(byBlock[ct.fld.Block], ct)
-	}
-	var out []listItem
-	for _, b := range blk.Blocks {
-		cs := byBlock[b.Key]
-		if len(cs) == 0 {
-			continue
-		}
-		out = append(out, listItem{title: b.Title})
-		for _, ct := range cs {
-			out = append(out, listItem{ctrl: ct})
-		}
-	}
-	return out
-}
-
 // --- helpers ---
 
-func card(gtx C, th *material.Theme, w layout.Widget) D {
-	return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
-		return widget.Border{Color: rgb(0x3A3C44), Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx,
-			func(gtx C) D {
-				return layout.UniformInset(unit.Dp(8)).Layout(gtx, w)
-			})
-	})
+// card draws a full-width rounded bordered bar/panel around content (measure-first).
+func card(gtx C, border, fill color.NRGBA, content layout.Widget) D {
+	macro := op.Record(gtx.Ops)
+	dims := layout.UniformInset(unit.Dp(11)).Layout(gtx, content)
+	call := macro.Stop()
+	dims.Size.X = gtx.Constraints.Max.X
+	r := image.Rectangle{Max: dims.Size}
+	fillRRect(gtx.Ops, r, gtx.Dp(10), fill)
+	strokeRRect(gtx.Ops, r, gtx.Dp(10), float32(gtx.Dp(1)), border)
+	call.Add(gtx.Ops)
+	return dims
 }
 
-func center(gtx C, w layout.Widget) D {
-	return layout.Center.Layout(gtx, w)
+func centerMsg(gtx C, th *material.Theme, s string) D {
+	return layout.Center.Layout(gtx, label(th, unit.Sp(15), s, colMuted).Layout)
 }
 
 func rgb(v uint32) color.NRGBA {

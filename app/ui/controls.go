@@ -1,10 +1,9 @@
 package ui
 
 import (
-	"image"
 	"strconv"
+	"strings"
 
-	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -21,88 +20,101 @@ type D = layout.Dimensions
 // setFunc sends a parameter value to the device (throttled downstream).
 type setFunc func(id uint16, val float32)
 
-// control is the editable widget for one parameter. Widget state persists across frames; the
-// param metadata (p) is refreshed from the device snapshot each frame.
-type control struct {
-	p   proto.Param
-	fld blk.Field
+type ctlKind int
 
-	flt widget.Float      // float
-	sw  widget.Bool       // bool
-	seg []widget.Clickable // enum options (one per index)
-	dec widget.Clickable  // int −
-	inc widget.Clickable  // int +
+const (
+	kindKnob ctlKind = iota
+	kindSlider
+	kindSeg
+	kindToggle
+	kindStepper
+)
+
+// control is the editable widget for one parameter. Widget state persists across frames; the param
+// metadata (p) is refreshed from the device snapshot each frame.
+type control struct {
+	p    proto.Param
+	fld  blk.Field
+	kind ctlKind
+
+	knob Knob             // knob float
+	vsl  VSlider          // slider float (ADSR)
+	tog  widget.Clickable // bool
+	seg  []widget.Clickable
+	dec  widget.Clickable // int −
+	inc  widget.Clickable // int +
 }
 
 func newControl(p proto.Param) *control {
 	c := &control{p: p, fld: blk.For(p.Name)}
-	if p.Type == proto.TypeEnum {
+	switch p.Type {
+	case proto.TypeEnum:
+		c.kind = kindSeg
 		n := int(p.Max-p.Min) + 1
 		if n < 1 {
 			n = 1
 		}
 		c.seg = make([]widget.Clickable, n)
+	case proto.TypeBool:
+		c.kind = kindToggle
+	case proto.TypeInt:
+		c.kind = kindStepper
+	default:
+		if blk.IsEnvSlider(p.Name) {
+			c.kind = kindSlider
+		} else {
+			c.kind = kindKnob
+		}
 	}
 	return c
 }
 
-// row lays out the label + control + value for one parameter and emits SETs on user change.
-func (c *control) row(gtx C, th *material.Theme, set setFunc) D {
-	switch c.p.Type {
-	case proto.TypeBool:
-		return c.rowBool(gtx, th, set)
-	case proto.TypeEnum:
-		return c.rowEnum(gtx, th, set)
-	case proto.TypeInt:
-		return c.rowInt(gtx, th, set)
-	default:
-		return c.rowFloat(gtx, th, set)
-	}
-}
+// --- cell renderers (each returns one self-contained control cell) --------------------------------
 
-func (c *control) rowFloat(gtx C, th *material.Theme, set setFunc) D {
+func (c *control) knobCell(gtx C, th *material.Theme, set setFunc) D {
 	min, max := c.p.Min, c.p.Max
 	span := max - min
-	// Reflect the device value into the slider UNLESS the user is dragging (anti snap-back).
-	if !c.flt.Dragging() && span != 0 {
-		c.flt.Value = (c.p.Cur - min) / span
+	if !c.knob.Dragging() && span != 0 {
+		c.knob.Value = clamp01((c.p.Cur - min) / span)
 	}
-	before := c.flt.Value
-
-	live := min + c.flt.Value*span
-	dims := layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-		layout.Rigid(c.label(th)),
-		layout.Flexed(1, func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx,
-				material.Slider(th, &c.flt).Layout)
-		}),
-		layout.Rigid(valueLabel(th, fmtVal(live, c.fld.Unit))),
-	)
-
-	if after := c.flt.Value; after != before {
-		set(c.p.ID, min+after*span) // device coalesces the drag stream
+	live := min + c.knob.Value*span
+	dims := fixedW(gtx, gtx.Dp(70), func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(c.knob.Layout),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+			layout.Rigid(label(th, unit.Sp(11), fmtVal(live, c.fld.Unit), colTxt).Layout),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(1)}.Layout),
+			layout.Rigid(capLabel(th, c.fld.Label, colFaint)),
+		)
+	})
+	if c.knob.Changed() {
+		set(c.p.ID, min+c.knob.Value*span)
 	}
 	return dims
 }
 
-func (c *control) rowBool(gtx C, th *material.Theme, set setFunc) D {
-	c.sw.Value = c.p.Cur > 0.5 // reflect device state
-	before := c.sw.Value
-	dims := layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-		layout.Rigid(c.label(th)),
-		layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
-		layout.Rigid(material.Switch(th, &c.sw, c.fld.Label).Layout),
-	)
-	if c.sw.Value != before {
-		set(c.p.ID, boolf(c.sw.Value))
+func (c *control) sliderCell(gtx C, th *material.Theme, set setFunc) D {
+	min, max := c.p.Min, c.p.Max
+	span := max - min
+	if !c.vsl.Dragging() && span != 0 {
+		c.vsl.Value = clamp01((c.p.Cur - min) / span)
+	}
+	dims := fixedW(gtx, gtx.Dp(34), func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(c.vsl.Layout),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+			layout.Rigid(capLabel(th, envLetter(c.fld.Label), colMuted)),
+		)
+	})
+	if c.vsl.Changed() {
+		set(c.p.ID, min+c.vsl.Value*span)
 	}
 	return dims
 }
 
-func (c *control) rowEnum(gtx C, th *material.Theme, set setFunc) D {
+func (c *control) segField(gtx C, th *material.Theme, set setFunc) D {
 	cur := int(c.p.Cur + 0.5)
-	// Emit SET on click before drawing (so the highlight updates same frame via device echo/optimism).
-	for i := range c.seg {
+	for i := range c.seg { // read clicks before drawing (Clickable.Layout drains them)
 		if c.seg[i].Clicked(gtx) {
 			set(c.p.ID, float32(i))
 			cur = i
@@ -111,28 +123,34 @@ func (c *control) rowEnum(gtx C, th *material.Theme, set setFunc) D {
 	segs := make([]layout.FlexChild, 0, len(c.seg))
 	for i := range c.seg {
 		i := i
+		on := i == cur
 		segs = append(segs, layout.Rigid(func(gtx C) D {
-			b := material.Button(th, &c.seg[i], c.fld.EnumLabel(i))
-			b.TextSize = unit.Sp(13)
-			b.Inset = layout.UniformInset(unit.Dp(4))
-			if i == cur {
-				b.Background = th.ContrastBg
-			} else {
-				b.Background = th.Bg
-				b.Color = th.Fg
-			}
-			return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, b.Layout)
+			return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+				return c.seg[i].Layout(gtx, func(gtx C) D {
+					return segPill(on).draw(gtx, th, c.fld.EnumLabel(i))
+				})
+			})
 		}))
 	}
-	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-		layout.Rigid(c.label(th)),
-		layout.Flexed(1, func(gtx C) D {
-			return layout.Flex{Axis: layout.Horizontal}.Layout(gtx, segs...)
-		}),
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(capLabel(th, c.fld.Label, colFaint)),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(5)}.Layout),
+		layout.Rigid(func(gtx C) D { return layout.Flex{Axis: layout.Horizontal}.Layout(gtx, segs...) }),
 	)
 }
 
-func (c *control) rowInt(gtx C, th *material.Theme, set setFunc) D {
+func (c *control) toggleCell(gtx C, th *material.Theme, set setFunc) D {
+	on := c.p.Cur > 0.5
+	if c.tog.Clicked(gtx) {
+		on = !on
+		set(c.p.ID, boolf(on))
+	}
+	return c.tog.Layout(gtx, func(gtx C) D {
+		return togPill(on).draw(gtx, th, c.fld.Label)
+	})
+}
+
+func (c *control) stepperCell(gtx C, th *material.Theme, set setFunc) D {
 	cur := int(c.p.Cur + 0.5)
 	lo, hi := int(c.p.Min+0.5), int(c.p.Max+0.5)
 	if c.dec.Clicked(gtx) && cur > lo {
@@ -143,34 +161,45 @@ func (c *control) rowInt(gtx C, th *material.Theme, set setFunc) D {
 		cur++
 		set(c.p.ID, float32(cur))
 	}
-	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-		layout.Rigid(c.label(th)),
-		layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
-		layout.Rigid(material.Button(th, &c.dec, "−").Layout),
+	step := func(b *widget.Clickable, s string) layout.Widget {
+		return func(gtx C) D {
+			return b.Layout(gtx, func(gtx C) D {
+				return pill{border: colLine2, text: colMuted, size: unit.Sp(15), padX: 8, padY: 2, radius: 6}.draw(gtx, th, s)
+			})
+		}
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(capLabel(th, c.fld.Label, colFaint)),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(5)}.Layout),
 		layout.Rigid(func(gtx C) D {
-			return layout.Inset{Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx,
-				valueLabel(th, fmtVal(float32(cur), c.fld.Unit)))
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(step(&c.dec, "−")),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx,
+						label(th, unit.Sp(14), strconv.Itoa(cur), colTxt).Layout)
+				}),
+				layout.Rigid(step(&c.inc, "+")),
+			)
 		}),
-		layout.Rigid(material.Button(th, &c.inc, "+").Layout),
 	)
 }
 
-func (c *control) label(th *material.Theme) layout.Widget {
-	return func(gtx C) D {
-		gtx.Constraints.Min.X = gtx.Dp(140)
-		l := material.Body2(th, c.fld.Label)
-		return l.Layout(gtx)
-	}
+// --- helpers -------------------------------------------------------------------------------------
+
+// fixedW lays out w with a fixed width so knob/slider cells align in a grid.
+func fixedW(gtx C, w int, wdg layout.Widget) D {
+	gtx.Constraints.Min.X = w
+	gtx.Constraints.Max.X = w
+	return wdg(gtx)
 }
 
-func valueLabel(th *material.Theme, s string) layout.Widget {
-	return func(gtx C) D {
-		gtx.Constraints.Min.X = gtx.Dp(96)
-		l := material.Body2(th, s)
-		l.Font.Weight = font.Medium
-		l.Alignment = 2 // text.End
-		return l.Layout(gtx)
+// envLetter is the single-letter fader label (Attack→A, Decay→D, …).
+func envLetter(label string) string {
+	r := []rune(label)
+	if len(r) == 0 {
+		return ""
 	}
+	return strings.ToUpper(string(r[0]))
 }
 
 func fmtVal(v float32, unit string) string {
@@ -180,13 +209,17 @@ func fmtVal(v float32, unit string) string {
 		s = strconv.FormatInt(int64(v), 10)
 	case unit == "с":
 		s = strconv.FormatFloat(float64(v), 'f', 3, 32)
+	case v >= 1000 || v <= -1000:
+		s = strconv.FormatFloat(float64(v)/1000, 'f', 1, 32) + "k"
 	case v >= 100 || v <= -100:
 		s = strconv.FormatFloat(float64(v), 'f', 0, 32)
 	default:
 		s = strconv.FormatFloat(float64(v), 'f', 2, 32)
 	}
-	if unit != "" {
+	if unit != "" && !strings.HasSuffix(s, "k") {
 		s += " " + unit
+	} else if unit != "" {
+		s += unit
 	}
 	return s
 }

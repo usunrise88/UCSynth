@@ -4,11 +4,21 @@ import (
 	"image"
 	"testing"
 
+	"gioui.org/font/gofont"
 	"gioui.org/io/input"
 	"gioui.org/io/key"
 	"gioui.org/layout"
 	"gioui.org/op"
+	"gioui.org/text"
+	"gioui.org/widget/material"
 )
+
+// testTheme builds a material theme with the Go font collection so material.Label renders headless.
+func testTheme() *material.Theme {
+	th := material.NewTheme()
+	th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
+	return th
+}
 
 // playKey drives frames until focus settles, injects a press+release of the named key, and returns
 // the note reported on press (or -1). Regression for the focus bug: without key.FocusFilter the
@@ -18,12 +28,13 @@ func kbHarness(t *testing.T) (*Keyboard, func(name string, state key.State), fun
 	var r input.Router
 	got := -1
 	kb := NewKeyboard(func(n, _ uint8) { got = int(n) }, func(uint8) {})
+	th := testTheme()
 	gtx := layout.Context{Ops: new(op.Ops), Metric: testMetric, Source: r.Source(), Constraints: layout.Exact(image.Pt(400, 300))}
 	frame := func() {
 		gtx.Reset()
 		gtx.Metric = testMetric
 		gtx.Constraints = layout.Exact(image.Pt(400, 300))
-		kb.Layout(gtx)
+		kb.Layout(gtx, th)
 		r.Frame(gtx.Ops)
 	}
 	frame()
