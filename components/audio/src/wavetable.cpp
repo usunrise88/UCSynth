@@ -16,7 +16,7 @@ constexpr int   L0        = 2048;    // длина таблицы низшего
 constexpr int   MIN_LEN   = 8;       // выше по частоте гармоник единицы — мельче таблицы не нужны
 constexpr float F0        = 20.0f;   // низ mip 0; mip m покрывает [F0·2^m, F0·2^{m+1})
 
-constexpr double kTwoPi = 6.283185307179586476925287;
+constexpr float TWO_PI = 6.28318530717958648f;
 
 // Длина таблицы mip m: делим L0 пополам на октаву, но не мельче MIN_LEN. constexpr → размер пула
 // считается на компиляции (точно, без магических констант).
@@ -37,17 +37,18 @@ float  s_pool[POOL_FLOATS];              // все таблицы подряд (
 float *s_tab[WAVE_COUNT][MIP_COUNT];     // начало таблицы [форма][mip]
 int    s_len[MIP_COUNT];                 // длина таблицы mip (без guard)
 
-// Амплитуда k-й гармоники формы (без sin). Пилу строим из всех гармоник (1/k, знак чередуется),
-// меандр/треугольник — из нечётных (1/k и 1/k² соответственно); синус — только 1-я гармоника.
-double coeff(uint8_t w, int k)
+// Амплитуда k-й гармоники формы (без sin). Считается ВНЕ горячего цикла (предрасчёт на mip),
+// поэтому деление тут не жаль. Пила — все гармоники (1/k, знак чередуется), меандр/треугольник —
+// нечётные (1/k и 1/k²); синус — только 1-я гармоника.
+float coeff(uint8_t w, int k)
 {
     switch (w) {
-        case WAVE_SAW:    return (k & 1 ? 1.0 : -1.0) / (double)k;             // ∑ (-1)^{k+1}/k
-        case WAVE_SQUARE: return (k & 1) ? 1.0 / (double)k : 0.0;             // нечётные, 1/k
-        case WAVE_TRI:    return (k & 1) ? (((k - 1) / 2) & 1 ? -1.0 : 1.0)   // нечётные, 1/k²,
-                                           / (double)(k * k) : 0.0;           //   знак чередуется
+        case WAVE_SAW:    return (k & 1 ? 1.0f : -1.0f) / (float)k;            // ∑ (-1)^{k+1}/k
+        case WAVE_SQUARE: return (k & 1) ? 1.0f / (float)k : 0.0f;            // нечётные, 1/k
+        case WAVE_TRI:    return (k & 1) ? (((k - 1) / 2) & 1 ? -1.0f : 1.0f) // нечётные, 1/k²,
+                                           / (float)(k * k) : 0.0f;           //   знак чередуется
         case WAVE_SINE:
-        default:          return (k == 1) ? 1.0 : 0.0;                        // чистая 1-я
+        default:          return (k == 1) ? 1.0f : 0.0f;                      // чистая 1-я
     }
 }
 
@@ -55,7 +56,11 @@ double coeff(uint8_t w, int k)
 
 void wavetable_init(float sample_rate)
 {
-    const double nyquist = 0.5 * (double)sample_rate;
+    // ВСЁ считаем в float. У ESP32-S3 FPU только одинарной точности — double идёт через софт-
+    // эмуляцию (__muldf3/__adddf3/__divdf3), из-за чего первая версия генерации отъедала ~15 с на
+    // старте и валила task-WDT (IDLE0 голодал). float → аппаратный FPU, генерация < 1 с.
+    static float coef[L0 / 2 + 1];              // скретч коэффициентов гармоник (в .bss, не на стеке)
+    const float nyquist = 0.5f * sample_rate;
 
     for (int m = 0; m < MIP_COUNT; ++m) s_len[m] = mip_len(m);
 
@@ -69,32 +74,40 @@ void wavetable_init(float sample_rate)
 
             // Гармоник — до Найквиста ВЕРХА диапазона mip (худшая нота диапазона не алиасит),
             // и не выше Найквиста самой таблицы (L/2).
-            const double f_hi = (double)F0 * (double)(1 << (m + 1));
+            const float f_hi = F0 * (float)(1 << (m + 1));
             int K = (int)(nyquist / f_hi);
             if (K > L / 2 - 1) K = L / 2 - 1;
             if (K < 1)         K = 1;
 
-            double maxabs = 0.0;
+            // Предрасчёт коэффициентов + верхняя ненулевая гармоника (для синуса цикл короткий,
+            // для меандра/треугольника пропускаем хвост нулей за старшей нечётной).
+            int kmax = 1;
+            for (int k = 1; k <= K; ++k) {
+                coef[k] = coeff((uint8_t)w, k);
+                if (coef[k] != 0.0f) kmax = k;
+            }
+
+            float maxabs = 0.0f;
             for (int i = 0; i < L; ++i) {
-                const double theta = kTwoPi * (double)i / (double)L;
-                const double c2    = 2.0 * cos(theta);
-                double s_prev = 0.0;             // sin(0·θ)
-                double s_cur  = sin(theta);      // sin(1·θ)
-                double acc    = 0.0;
-                for (int k = 1; k <= K; ++k) {
-                    acc += coeff((uint8_t)w, k) * s_cur;         // s_cur = sin(kθ)
-                    const double s_next = c2 * s_cur - s_prev;   // рекуррента Чебышёва
+                const float theta = TWO_PI * (float)i / (float)L;
+                const float c2    = 2.0f * cosf(theta);   // sin(kθ) — рекуррентой Чебышёва:
+                float s_prev = 0.0f;                       //   sin((k+1)θ) = 2cosθ·sin(kθ) − sin((k−1)θ)
+                float s_cur  = sinf(theta);
+                float acc    = 0.0f;
+                for (int k = 1; k <= kmax; ++k) {
+                    acc += coef[k] * s_cur;                // коэф. предрасчитан → в цикле только mul/add
+                    const float s_next = c2 * s_cur - s_prev;
                     s_prev = s_cur;
                     s_cur  = s_next;
                 }
-                t[i] = (float)acc;
-                const double a = acc < 0 ? -acc : acc;
+                t[i] = acc;
+                const float a = acc < 0.0f ? -acc : acc;
                 if (a > maxabs) maxabs = a;
             }
 
             // Нормировка на пик = 1 (гарантирует [-1,1] и после интерполяции — она не выходит
             // за концы отрезка). Слегка разный пик по mip из-за Гиббса не критичен.
-            const float norm = (maxabs > 1e-9) ? (float)(1.0 / maxabs) : 1.0f;
+            const float norm = (maxabs > 1e-9f) ? (1.0f / maxabs) : 1.0f;
             for (int i = 0; i < L; ++i) t[i] *= norm;
             t[L] = t[0];                                          // guard = первый семпл
         }

@@ -111,7 +111,7 @@ static void display_task(void *arg)
     (void)arg;
     static uint8_t fb[SSD1306_FB_SIZE];
 
-    float   prev[16];
+    float   prev[PARAM_COUNT];   // снимок значений всех параметров (реестр вырос — этап 3)
     bool    prev_init = false;
     int     popup_id  = -1;
     int64_t popup_t0  = 0;
@@ -124,10 +124,10 @@ static void display_task(void *arg)
         // Детекция смены параметра для popup: снимок значений, сравнение с прошлым кадром.
         const uint16_t n = param_count();
         if (!prev_init) {
-            for (uint16_t i = 0; i < n && i < 16; ++i) prev[i] = get_param(i);
+            for (uint16_t i = 0; i < n; ++i) prev[i] = get_param(i);
             prev_init = true;
         } else {
-            for (uint16_t i = 0; i < n && i < 16; ++i) {
+            for (uint16_t i = 0; i < n; ++i) {
                 const float v = get_param(i);
                 if (v != prev[i]) { prev[i] = v; popup_id = (int)i; popup_t0 = now; }
             }

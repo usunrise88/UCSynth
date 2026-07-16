@@ -1,12 +1,14 @@
 // audio — аудио-тракт на Core 0: I2S std TX → PCM5102 (GY-PCM5102).
-// Этап 3.0: моно-голос, управляемый нотами (NOTE_ON/OFF из comm через FreeRTOS-очередь),
-// band-limited wavetable (октавные mip-таблицы, без алиасинга на верхах). Отладочный тест-тон
-// (test_tone) перебивает ноты для проверки тракта. Плюс scope-буфер для осциллографа на дисплее.
-// Параметры читаются ТОЛЬКО через control (get_param) — напрямую в DSP никогда.
+// Этапы 3.1–3.4: полноценный моно-голос (voice.*) — 3 осц → микшер(+шум +ring) → ZDF-фильтр → VCA,
+// две ADSR, drone (latch/loop), lo-fi. Управляется нотами (NOTE_ON/OFF из comm через FreeRTOS-
+// очередь). Отладочный тест-тон (test_tone) — минимальный сквозной путь для проверки тракта.
+// Плюс scope-буфер для осциллографа на дисплее. audio.cpp — I/O-оболочка: читает control и
+// передаёт параметры в чистый DSP (voice), напрямую в DSP значения не идут.
 // Железо и распиновка: docs/hardware-stage1-pcm5102.md.
 #include "audio.h"
 #include "control.h"
 #include "wavetable.h"
+#include "voice.h"
 
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -49,14 +51,32 @@ static std::atomic<uint32_t> s_late_blocks{0};    // блоки, не уложи
 struct NoteEvent {
     uint8_t on;     // 1 = note-on, 0 = note-off
     uint8_t note;   // MIDI-номер
-    uint8_t vel;    // velocity (в 3.0 не используется; задел под VCA 3.1)
+    uint8_t vel;    // velocity (задел под вел-чувствительность; в 3.1 не используется)
 };
 static QueueHandle_t s_note_q = nullptr;
 
-// MIDI-нота → частота (12-TET, A4=69=440 Гц). Зовём на событие ноты (control-rate), powf ок.
-static inline float note_to_hz(uint8_t note)
+// Собрать параметры голоса из реестра (раз в блок, ~27 атомарных чтений — дёшево). Голос сам
+// control не трогает — вся связь control→DSP здесь.
+static void build_voice_params(VoiceParams *vp)
 {
-    return 440.0f * powf(2.0f, ((int)note - 69) * (1.0f / 12.0f));
+    vp->osc[0] = { (uint8_t)get_param(PARAM_WAVEFORM),  get_param(PARAM_OSC1_DETUNE), get_param(PARAM_OSC1_LEVEL) };
+    vp->osc[1] = { (uint8_t)get_param(PARAM_OSC2_WAVE), get_param(PARAM_OSC2_DETUNE), get_param(PARAM_OSC2_LEVEL) };
+    vp->osc[2] = { (uint8_t)get_param(PARAM_OSC3_WAVE), get_param(PARAM_OSC3_DETUNE), get_param(PARAM_OSC3_LEVEL) };
+    vp->noise_level = get_param(PARAM_NOISE_LEVEL);
+    vp->ring_level  = get_param(PARAM_RING_LEVEL);
+    vp->cutoff_hz   = get_param(PARAM_CUTOFF);
+    vp->resonance   = get_param(PARAM_RESONANCE);
+    vp->filt_mode   = (uint8_t)get_param(PARAM_FILTER_MODE);
+    vp->flt_env_amt = get_param(PARAM_FLT_ENV_AMT);
+    vp->amp_env = { get_param(PARAM_AMP_ATTACK), get_param(PARAM_AMP_DECAY),
+                    get_param(PARAM_AMP_SUSTAIN), get_param(PARAM_AMP_RELEASE),
+                    get_param(PARAM_AMP_LOOP) > 0.5f };
+    vp->flt_env = { get_param(PARAM_FLT_ATTACK), get_param(PARAM_FLT_DECAY),
+                    get_param(PARAM_FLT_SUSTAIN), get_param(PARAM_FLT_RELEASE),
+                    get_param(PARAM_FLT_LOOP) > 0.5f };
+    vp->lofi      = get_param(PARAM_LOFI) > 0.5f;
+    vp->lofi_bits = (int)get_param(PARAM_LOFI_BITS);
+    vp->latch     = get_param(PARAM_LATCH) > 0.5f;
 }
 
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
@@ -66,62 +86,58 @@ static void audio_task(void *arg)
     (void)arg;
 
     int16_t block[BLOCK_FRAMES * 2];   // STEREO-слот: L и R одинаковые (mono → оба канала)
+    float   fbuf[BLOCK_FRAMES];        // float-выход голоса (до мастера/клампа)
 
-    // Состояние моно-голоса — только здесь (Core 0), без атомиков.
-    float   phase    = 0.0f;           // [0,1), фаза свободнобегущая (без ресета на ноте → без щелчка)
-    float   note_hz  = 440.0f;         // частота текущей ноты
-    bool    gate     = false;          // нота удерживается?
-    uint8_t cur_note = 255;            // какая нота звучит (моно: note-off гасит только её)
-    float   amp      = 0.0f;           // сглаженная амплитуда голоса (анти-клик; ADSR — этап 3.1)
+    Voice voice;
+    voice_init(&voice, 0x2468ACEu);
+    float tt_phase = 0.0f;             // фаза тест-тона (отдельный сквозной путь, без env/фильтра)
 
     // Осциллограф: пишем форму (до громкости) в НЕактивный буфер, по заполнении окна — флип.
     int scope_wr  = 1 - s_scope_ready.load(std::memory_order_relaxed);
     int scope_pos = 0;
 
-    // Анти-клик: линейная рампа amp к цели за ~5 мс (замена ADSR на 3.0; XSMT статически на 3.3В).
-    const float amp_step = 1.0f / (0.005f * SAMPLE_RATE);
-
     for (;;) {
         const int64_t t_start = esp_timer_get_time();
 
-        // Дренаж нотной очереди в начале блока: моно, последняя нота приоритетна (ретригер).
+        // Дренаж нотной очереди в начале блока → моно-голос (latch/key-state — внутри voice).
+        const bool latch = get_param(PARAM_LATCH) > 0.5f;
         NoteEvent ev;
         while (xQueueReceive(s_note_q, &ev, 0) == pdTRUE) {
-            if (ev.on) {
-                cur_note = ev.note;
-                note_hz  = note_to_hz(ev.note);
-                gate     = true;
-            } else if (ev.note == cur_note) {
-                gate = false;              // гасим только текущую (устаревший off чужой ноты игнор)
-            }
+            if (ev.on) voice_note_on(&voice, ev.note, ev.vel, latch);
+            else       voice_note_off(&voice, ev.note);
         }
 
-        // control-rate: параметры читаем раз в блок, не на каждый семпл.
-        const float   vol     = get_param(PARAM_MASTER_VOLUME);
-        const uint8_t wave    = (uint8_t)get_param(PARAM_WAVEFORM);
-        const bool    test_on = get_param(PARAM_TEST_TONE) > 0.5f;
+        // control-rate: мастер и режим тест-тона.
+        const float master  = get_param(PARAM_MASTER_VOLUME);
+        const bool  test_on = get_param(PARAM_TEST_TONE) > 0.5f;
 
-        // Тест-тон (отладка тракта) перебивает ноты: играет непрерывно на test_tone_hz.
-        const float freq       = test_on ? get_param(PARAM_TEST_TONE_HZ) : note_hz;
-        const float amp_target = (test_on || gate) ? 1.0f : 0.0f;
-        const int   mip        = wavetable_mip(freq);          // выбор mip — раз в блок, без log2 в цикле
-        const float phase_inc  = freq / (float)SAMPLE_RATE;    // оборотов на семпл
+        if (test_on) {
+            // Эталон тракта: осц1-форма на test_tone_hz, полная амплитуда, БЕЗ env/фильтра.
+            const float   ttf = get_param(PARAM_TEST_TONE_HZ);
+            const uint8_t ttw = (uint8_t)get_param(PARAM_WAVEFORM);
+            const int     ttm = wavetable_mip(ttf);
+            const float   inc = ttf / (float)SAMPLE_RATE;
+            for (int i = 0; i < BLOCK_FRAMES; ++i) {
+                fbuf[i] = wavetable_sample(ttw, tt_phase, ttm);
+                tt_phase += inc;
+                if (tt_phase >= 1.0f) tt_phase -= 1.0f;
+            }
+        } else {
+            VoiceParams vp;
+            build_voice_params(&vp);
+            voice_render(&voice, &vp, (float)SAMPLE_RATE, fbuf, BLOCK_FRAMES);
+        }
 
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
-            if (amp < amp_target)      { amp += amp_step; if (amp > amp_target) amp = amp_target; }
-            else if (amp > amp_target) { amp -= amp_step; if (amp < amp_target) amp = amp_target; }
-
-            const float s0 = wavetable_sample(wave, phase, mip);   // band-limited форма [-1,1]
-            const float s  = s0 * amp * vol;                       // на выход (амплитуда × громкость)
-            phase += phase_inc;
-            if (phase >= 1.0f) phase -= 1.0f;
+            float s = fbuf[i] * master;
+            if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;   // страховка перед int16 (сумма/резонанс)
 
             const int16_t v = (int16_t)lrintf(s * 32767.0f);
             block[2 * i]     = v;   // L
             block[2 * i + 1] = v;   // R
 
-            // Снимок формы для дисплея; по заполнении окна публикуем буфер (release).
-            s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(s0 * 127.0f);
+            // Снимок формы (до мастера) для дисплея; по заполнении окна публикуем буфер (release).
+            s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(fbuf[i] * 127.0f);
             if (scope_pos >= AUDIO_SCOPE_LEN) {
                 s_scope_ready.store(scope_wr, std::memory_order_release);
                 scope_wr ^= 1;
@@ -196,14 +212,20 @@ void audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
 
     // Band-limited wavetable-таблицы (октавные mip) под нашу частоту — до старта задачи.
+    // Замеряем: генерация должна быть быстрой (float/FPU). Если снова десятки мс×1000 — регресс
+    // на double-математику (у S3 нет аппаратного double → софт-эмуляция), см. wavetable.cpp.
+    const int64_t t_wt = esp_timer_get_time();
     wavetable_init((float)SAMPLE_RATE);
+    ESP_LOGI(TAG, "wavetable band-limited: mip-таблицы сгенерированы за %lld мс",
+             (esp_timer_get_time() - t_wt) / 1000);
 
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).
     s_note_q = xQueueCreate(32, sizeof(NoteEvent));
 
     // 3) Аудио-задача на Core 0 (Core 1 отдан comm/UI). Приоритет выше comm(5): звук важнее.
-    xTaskCreatePinnedToCore(audio_task, "audio", 4096, nullptr, 10, nullptr, 0);
+    //    Стек 6 КБ: голос + VoiceParams + float-буфер живут на стеке задачи.
+    xTaskCreatePinnedToCore(audio_task, "audio", 6144, nullptr, 10, nullptr, 0);
 
-    ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — моно-голос + band-limited wt (3.0)",
+    ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — голос 3.1–3.4 (3 осц/фильтр/ADSR/lofi)",
              (unsigned)SAMPLE_RATE, (int)PIN_BCK, (int)PIN_WS, (int)PIN_DIN);
 }
