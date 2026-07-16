@@ -4,15 +4,12 @@ package midi
 
 // WinMM MIDI-input via stdlib syscall — no cgo, so the controller still cross-builds from Linux.
 //
-// Mechanism: CALLBACK_WINDOW. WinMM PostMessages MM_MIM_DATA to a hidden message-only window; a
-// GetMessage loop on a goroutine locked to that window's OS thread retrieves it. We do NOT use:
-//   - CALLBACK_FUNCTION — its callback fires from a thread WinMM created, and syscall.NewCallback
-//     has no extra "m" for a foreign thread without cgo, so it hangs in lockextra (golang/go#20823).
-//   - CALLBACK_THREAD — confirmed on the user's Arturia MME driver to open/start fine but never post
-//     to the thread queue (open=0 start=0 pump msgs=0). Driver support for it is not universal.
-// CALLBACK_WINDOW is the broadly-supported path, and the window's messages are pumped by our own
-// thread, so no cgo is needed. Untestable here (needs a Windows host + MIDI device); parse.go holds
-// the unit-tested decoder.
+// Mechanism: CALLBACK_WINDOW to a hidden message-only window, pumped by GetMessage. EVERYTHING
+// (create window, midiInOpen, midiInStart, the pump, and teardown) runs on ONE goroutine locked to
+// one OS thread — WinMM's window messages are thread-affine, so opening from a different thread than
+// the pump can silently deliver nothing. Not CALLBACK_FUNCTION (foreign-thread callback hangs a
+// cgo-free binary, golang/go#20823) and not CALLBACK_THREAD (the user's Arturia MME driver opened
+// fine but posted nothing to the thread queue). Untestable here; parse.go holds the tested decoder.
 
 import (
 	"errors"
@@ -37,6 +34,7 @@ var (
 	pMidiInClose       = winmm.NewProc("midiInClose")
 
 	pGetModuleHandleW   = kernel32.NewProc("GetModuleHandleW")
+	pGetCurrentThreadId = kernel32.NewProc("GetCurrentThreadId")
 	pRegisterClassExW   = user32.NewProc("RegisterClassExW")
 	pCreateWindowExW    = user32.NewProc("CreateWindowExW")
 	pDestroyWindow      = user32.NewProc("DestroyWindow")
@@ -44,7 +42,6 @@ var (
 	pGetMessageW        = user32.NewProc("GetMessageW")
 	pDispatchMessageW   = user32.NewProc("DispatchMessageW")
 	pPostThreadMessageW = user32.NewProc("PostThreadMessageW")
-	pGetCurrentThreadId = kernel32.NewProc("GetCurrentThreadId")
 )
 
 const (
@@ -63,7 +60,6 @@ type midiInCapsW struct {
 	dwSupport      uint32
 }
 
-// wndClassExW mirrors WNDCLASSEXW.
 type wndClassExW struct {
 	cbSize        uint32
 	style         uint32
@@ -79,7 +75,6 @@ type wndClassExW struct {
 	hIconSm       uintptr
 }
 
-// winMsg mirrors MSG (x64: Go inserts the same padding after `message`).
 type winMsg struct {
 	hwnd    uintptr
 	message uint32
@@ -90,16 +85,19 @@ type winMsg struct {
 	ptY     int32
 }
 
-// live diagnostics, surfaced in the MIDI status line (the WinMM transport can't run here). Each
-// counter/flag makes a failure legible from the running app.
+// live diagnostics, surfaced in the MIDI status line (the WinMM transport can't run here).
 var (
-	dbgStage atomic.Uint32 // 0 none, 1 window✗, 2 window✓, 3 open✗, 4 open✓, 5 start✗, 6 pumping
-	dbgCode  atomic.Uint32 // last MMRESULT (open/start)
-	dbgCount atomic.Uint64 // MM_MIM_DATA messages seen
-	dbgLast  atomic.Uint32 // last packed message
+	dbgStage   atomic.Uint32 // 0 none,1 win✗,2 win✓,3 open✗,4 open✓,5 start✗,6 pumping
+	dbgCode    atomic.Uint32 // last MMRESULT
+	dbgTotal   atomic.Uint64 // any window message retrieved
+	dbgLastMsg atomic.Uint32 // last message id
+	dbgData    atomic.Uint64 // MM_MIM_DATA messages
+	dbgLast    atomic.Uint32 // last packed MIDI message
 )
 
-// Debug reports the transport stage + message count so a failure is diagnosable on the user's box.
+// Debug reports the transport stage + counters so a failure is diagnosable on the user's box:
+//
+//	MIDI: работает · data=<n> всего=<n> id=<hex> last=<hex>
 func Debug() string {
 	st := dbgStage.Load()
 	if st == 0 {
@@ -110,9 +108,12 @@ func Debug() string {
 	if st == 3 || st == 5 {
 		s += utoa(uint64(dbgCode.Load()))
 	}
-	if st >= 4 {
-		s += " · msgs=" + utoa(dbgCount.Load())
-		if dbgCount.Load() > 0 {
+	if st >= 6 {
+		s += " · data=" + utoa(dbgData.Load()) + " всего=" + utoa(dbgTotal.Load())
+		if dbgTotal.Load() > 0 {
+			s += " id=" + hex4(dbgLastMsg.Load())
+		}
+		if dbgData.Load() > 0 {
 			s += " last=" + hex6(dbgLast.Load())
 		}
 	}
@@ -125,27 +126,18 @@ var className, _ = syscall.UTF16PtrFromString("UCSynthMidiWin")
 func ensureClass() {
 	classOnce.Do(func() {
 		hInst, _, _ := pGetModuleHandleW.Call(0)
-		wc := wndClassExW{
-			lpfnWndProc:   pDefWindowProcW.Addr(),
-			hInstance:     hInst,
-			lpszClassName: className,
-		}
+		wc := wndClassExW{lpfnWndProc: pDefWindowProcW.Addr(), hInstance: hInst, lpszClassName: className}
 		wc.cbSize = uint32(unsafe.Sizeof(wc))
 		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))) // ignore "already registered"
 	})
 }
 
 type winInput struct {
-	handle uintptr
-	hwnd   uintptr
-	tid    uint32
-	done   chan struct{}
+	tid  uint32
+	done chan struct{}
 }
 
 func (w *winInput) Close() error {
-	pMidiInStop.Call(w.handle)
-	pMidiInReset.Call(w.handle)
-	pMidiInClose.Call(w.handle)
 	pPostThreadMessageW.Call(uintptr(w.tid), wmQuit, 0, 0)
 	<-w.done
 	return nil
@@ -163,83 +155,83 @@ func List() ([]string, error) {
 	return names, nil
 }
 
+// Open runs the whole WinMM lifecycle on one locked OS thread and returns once the device is started
+// (or failed). The pump keeps running until Close posts WM_QUIT.
 func Open(index int, handler func(Message)) (Input, error) {
 	dbgStage.Store(0)
 	dbgCode.Store(0)
-	dbgCount.Store(0)
+	dbgTotal.Store(0)
+	dbgLastMsg.Store(0)
+	dbgData.Store(0)
 	dbgLast.Store(0)
 	ensureClass()
 
 	w := &winInput{done: make(chan struct{})}
-	ready := make(chan struct{})
-	started := make(chan error, 1)
+	res := make(chan error, 1)
 
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		defer close(w.done)
 
-		// The window must be created on (and pumped by) this locked thread.
 		hInst, _, _ := pGetModuleHandleW.Call(0)
-		hwnd, _, _ := pCreateWindowExW.Call(
-			0, uintptr(unsafe.Pointer(className)), 0, 0,
-			0, 0, 0, 0, hwndMessage(), 0, hInst, 0,
-		)
+		hwnd, _, _ := pCreateWindowExW.Call(0, uintptr(unsafe.Pointer(className)), 0, 0, 0, 0, 0, 0, hwndMessage(), 0, hInst, 0)
 		tid, _, _ := pGetCurrentThreadId.Call()
-		w.hwnd = hwnd
 		w.tid = uint32(tid)
-		close(ready)
+		if hwnd == 0 {
+			dbgStage.Store(1)
+			res <- errors.New("не удалось создать окно для MIDI")
+			return
+		}
+		dbgStage.Store(2)
 
-		if err := <-started; err != nil {
-			if hwnd != 0 {
-				pDestroyWindow.Call(hwnd)
-			}
+		var handle uintptr
+		ret, _, _ := pMidiInOpen.Call(uintptr(unsafe.Pointer(&handle)), uintptr(index), hwnd, 0, callbackWindow)
+		dbgCode.Store(uint32(ret))
+		if ret != 0 {
+			dbgStage.Store(3)
+			pDestroyWindow.Call(hwnd)
+			res <- errors.New("midiInOpen не удалось (код " + utoa(uint64(ret)) + ")")
+			return
+		}
+		dbgStage.Store(4)
+		if r, _, _ := pMidiInStart.Call(handle); r != 0 {
+			dbgStage.Store(5)
+			dbgCode.Store(uint32(r))
+			pMidiInClose.Call(handle)
+			pDestroyWindow.Call(hwnd)
+			res <- errors.New("midiInStart не удалось (код " + utoa(uint64(r)) + ")")
 			return
 		}
 		dbgStage.Store(6)
+		res <- nil // started OK — Open returns; the pump continues below
+
 		var msg winMsg
 		for {
 			r, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
 			if int32(r) <= 0 { // 0 = WM_QUIT, -1 = error
 				break
 			}
+			dbgTotal.Add(1)
+			dbgLastMsg.Store(msg.message)
 			if msg.message == mimData {
-				raw := pickMidi(msg.wParam, msg.lParam, w.handle)
-				dbgCount.Add(1)
+				raw := pickMidi(msg.wParam, msg.lParam, handle)
+				dbgData.Add(1)
 				dbgLast.Store(raw)
 				handler(ParseWord(raw))
 			} else {
 				pDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
 			}
 		}
-		pDestroyWindow.Call(w.hwnd)
+		pMidiInStop.Call(handle)
+		pMidiInReset.Call(handle)
+		pMidiInClose.Call(handle)
+		pDestroyWindow.Call(hwnd)
 	}()
 
-	<-ready
-	if w.hwnd == 0 {
-		dbgStage.Store(1)
-		started <- errors.New("window")
-		return nil, errors.New("не удалось создать окно для MIDI")
+	if err := <-res; err != nil {
+		return nil, err
 	}
-	dbgStage.Store(2)
-
-	ret, _, _ := pMidiInOpen.Call(uintptr(unsafe.Pointer(&w.handle)), uintptr(index), w.hwnd, 0, callbackWindow)
-	dbgCode.Store(uint32(ret))
-	if ret != 0 {
-		dbgStage.Store(3)
-		started <- errors.New("open")
-		return nil, errors.New("midiInOpen не удалось (код " + utoa(uint64(ret)) + ")")
-	}
-	dbgStage.Store(4)
-	r, _, _ := pMidiInStart.Call(w.handle)
-	dbgCode.Store(uint32(r))
-	if r != 0 {
-		dbgStage.Store(5)
-		pMidiInClose.Call(w.handle)
-		started <- errors.New("start")
-		return nil, errors.New("midiInStart не удалось (код " + utoa(uint64(r)) + ")")
-	}
-	started <- nil
 	return w, nil
 }
 
@@ -273,7 +265,12 @@ func utoa(v uint64) string {
 	return string(b[i:])
 }
 
+const hexDigits = "0123456789ABCDEF"
+
+func hex4(v uint32) string {
+	return string([]byte{hexDigits[(v>>12)&0xF], hexDigits[(v>>8)&0xF], hexDigits[(v>>4)&0xF], hexDigits[v&0xF]})
+}
+
 func hex6(v uint32) string {
-	const d = "0123456789ABCDEF"
-	return string([]byte{d[(v>>20)&0xF], d[(v>>16)&0xF], d[(v>>12)&0xF], d[(v>>8)&0xF], d[(v>>4)&0xF], d[v&0xF]})
+	return string([]byte{hexDigits[(v>>20)&0xF], hexDigits[(v>>16)&0xF], hexDigits[(v>>12)&0xF], hexDigits[(v>>8)&0xF], hexDigits[(v>>4)&0xF], hexDigits[v&0xF]})
 }
