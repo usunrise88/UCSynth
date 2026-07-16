@@ -44,8 +44,8 @@ static void f32_bytes(float v, int out[4]) {
 int main() {
     control_init();
 
-    // --- реестр ---
-    CHECK(param_count() == 34, "param_count == 34");
+    // --- реестр --- (счётчик берём из enum — тест не ломается при добавлении параметров)
+    CHECK(param_count() == PARAM_COUNT, "param_count == PARAM_COUNT");
     CHECK(std::fabs(get_param(PARAM_MASTER_VOLUME) - 0.8f) < 1e-6f, "master_volume def 0.8");
 
     // --- GET id0 ---
@@ -81,12 +81,12 @@ int main() {
     // --- LIST ---
     {
         auto s = run({ CMD_LIST });
-        CHECK(s.frames.size() == 35, "LIST -> 34xPARAM + LISTEND");
+        CHECK(s.frames.size() == PARAM_COUNT + 1, "LIST -> PARAM_COUNT×PARAM + LISTEND");
         bool all_param = true;
-        for (int i = 0; i < 34; ++i) if (s.frames[i][0] != RSP_PARAM) all_param = false;
-        CHECK(all_param, "34 строки PARAM");
-        auto &e = s.frames[34];
-        CHECK(e[0] == RSP_LISTEND && u16(&e[1]) == 34, "LISTEND count=34");
+        for (int i = 0; i < PARAM_COUNT; ++i) if (s.frames[i][0] != RSP_PARAM) all_param = false;
+        CHECK(all_param, "PARAM_COUNT строк PARAM");
+        auto &e = s.frames[PARAM_COUNT];
+        CHECK(e[0] == RSP_LISTEND && u16(&e[1]) == PARAM_COUNT, "LISTEND count=PARAM_COUNT");
         auto &p0 = s.frames[0];
         const uint8_t namelen = p0[1 + 2 + 1 + 16];  // opcode+id+type+4*f32
         CHECK(namelen == 13 && std::memcmp(&p0[1 + 2 + 1 + 16 + 1], "master_volume", 13) == 0, "имя master_volume");

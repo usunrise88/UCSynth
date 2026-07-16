@@ -54,6 +54,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$ROOT/test/host/test_voice.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
     "$ROOT/components/audio/src/wavetable.cpp" \
     -o "$OUT5"
@@ -68,8 +69,83 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$ROOT/components/audio/src/synth.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
     "$ROOT/components/audio/src/wavetable.cpp" \
     -o "$OUT6"
 
 "$OUT6"
+
+# Тест lfo (этап 4.1 — формы LFO, диапазон, фаза, S&H hold/change).
+OUT7="$(mktemp -d)/lfotest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_lfo.cpp" \
+    "$ROOT/components/audio/src/lfo.cpp" \
+    -o "$OUT7"
+
+"$OUT7"
+
+# Тест matrix (этап 4.1 — мод-матрица: источник/приёмник/глубина, аккумуляция, гард NONE, velocity).
+OUT8="$(mktemp -d)/matrixtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_matrix.cpp" \
+    "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
+    "$ROOT/components/audio/src/filter.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT8"
+
+"$OUT8"
+
+# Тест morph (этап 4.2 — wavetable-морф: кроссфейд форм, фаз-когерентность, клампы, диапазон).
+OUT9="$(mktemp -d)/morphtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_morph.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT9"
+
+"$OUT9"
+
+# Тест waveenv (этап 4.2 — wave-огибающая: точки, one-shot/hold, loop, rate, диапазон).
+OUT10="$(mktemp -d)/waveenvtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_waveenv.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
+    -o "$OUT10"
+
+"$OUT10"
+
+# Тест fx (этап 5 — overdrive: байпас/монотонность/насыщение).
+OUT11="$(mktemp -d)/fxtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_fx.cpp" \
+    "$ROOT/components/audio/src/fx.cpp" \
+    -o "$OUT11"
+
+"$OUT11"
+
+# Тест delay (этап 5.2 — стерео delay: эхо/затухание, байпас, устойчивость).
+OUT12="$(mktemp -d)/delaytest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_delay.cpp" \
+    "$ROOT/components/audio/src/fx.cpp" \
+    -o "$OUT12"
+
+"$OUT12"
+
+# Тест reverb (этап 5.3 — Freeverb: затухание хвоста, устойчивость, байпас, гард буфера).
+OUT13="$(mktemp -d)/reverbtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_reverb.cpp" \
+    "$ROOT/components/audio/src/fx.cpp" \
+    -o "$OUT13"
+
+"$OUT13"

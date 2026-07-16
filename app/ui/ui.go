@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"sort"
 	"sync"
 
 	"gioui.org/font/gofont"
@@ -128,12 +129,13 @@ func (n *noteSink) off(note uint8) {
 	}
 }
 
-// rackCols assigns parameter blocks to the three VST columns (mockup layout). Any block not listed
-// (only "misc" today, the LIST-driven fallback) is appended to the last column.
+// rackCols assigns parameter blocks to the three VST columns (mockup layout). Any block that has
+// controls but isn't listed here is appended to the last column by rack() (real catch-all below) —
+// so a newly-added block can never be silently dropped from the UI.
 var rackCols = [][]string{
 	{"osc1", "osc2", "osc3", "mixer"},
-	{"filter", "ampenv", "fltenv"},
-	{"global", "lofi", "debug", "misc"},
+	{"filter", "ampenv", "fltenv", "waveenv", "overdrive", "delay", "reverb"},
+	{"global", "lfo1", "lfo2", "modmatrix", "lofi", "debug", "misc"},
 }
 var colWeights = []float32{1, 1.15, 1}
 
@@ -495,9 +497,15 @@ func (c *Controller) rack(gtx C) D {
 	for _, ct := range c.controls {
 		byBlock[ct.fld.Block] = append(byBlock[ct.fld.Block], ct)
 	}
+	// Catch-all: any block with controls not placed in rackCols goes to the last column, so adding a
+	// block to layout without touching rackCols can't silently drop its panel (unlistedBlocks is tested).
+	extra := unlistedBlocks(byBlock)
 	cols := make([]layout.FlexChild, 0, len(rackCols))
 	for ci, keys := range rackCols {
 		ci, keys := ci, keys
+		if ci == len(rackCols)-1 && len(extra) > 0 {
+			keys = append(append([]string{}, keys...), extra...) // copy — don't mutate rackCols
+		}
 		cols = append(cols, layout.Flexed(colWeights[ci], func(gtx C) D {
 			ins := layout.Inset{}
 			if ci > 0 {
@@ -510,6 +518,25 @@ func (c *Controller) rack(gtx C) D {
 		}))
 	}
 	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Start}.Layout(gtx, cols...)
+}
+
+// unlistedBlocks returns block keys present in byBlock but absent from rackCols, sorted for a stable
+// order. rack() appends them to the last column so no block can be silently dropped from the UI.
+func unlistedBlocks(byBlock map[string][]*control) []string {
+	listed := map[string]bool{}
+	for _, keys := range rackCols {
+		for _, k := range keys {
+			listed[k] = true
+		}
+	}
+	var extra []string
+	for k := range byBlock {
+		if !listed[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	return extra
 }
 
 func (c *Controller) column(gtx C, keys []string, byBlock map[string][]*control) D {
@@ -526,7 +553,11 @@ func (c *Controller) column(gtx C, keys []string, byBlock map[string][]*control)
 		}
 		first = false
 		items = append(items, layout.Rigid(func(gtx C) D {
-			return vstPanel(gtx, c.th, blk.BlockTitle(k), func(gtx C) D { return c.panelBody(gtx, cs) })
+			body := func(gtx C) D { return c.panelBody(gtx, cs) }
+			if k == "modmatrix" { // compact per-slot view instead of generic pill-rows
+				body = func(gtx C) D { return c.matrixPanel(gtx, cs) }
+			}
+			return vstPanel(gtx, c.th, blk.BlockTitle(k), body)
 		}))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)

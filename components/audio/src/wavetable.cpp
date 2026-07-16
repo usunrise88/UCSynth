@@ -138,3 +138,16 @@ float wavetable_sample(uint8_t w, float phase, int mip)
     const float  frac = fpos - (float)i;
     return t[i] + (t[i + 1] - t[i]) * frac;                      // t[L] — guard-семпл
 }
+
+float wavetable_sample_morph(float pos, float phase, int mip)
+{
+    if (pos < 0.0f)                        pos = 0.0f;
+    else if (pos > (float)(WAVE_COUNT - 1)) pos = (float)(WAVE_COUNT - 1);
+    const int   w0   = (int)pos;                                 // нижняя форма [0, WAVE_COUNT-1]
+    const float frac = pos - (float)w0;
+    if (frac <= 0.0f) return wavetable_sample((uint8_t)w0, phase, mip);   // целая позиция — без морфа
+    const int   w1 = (w0 + 1 < WAVE_COUNT) ? w0 + 1 : w0;        // верхний сосед (страховка от выхода)
+    const float a  = wavetable_sample((uint8_t)w0, phase, mip);  // общая длина на mip → фаза совпадает
+    const float b  = wavetable_sample((uint8_t)w1, phase, mip);
+    return a + (b - a) * frac;                                   // кроссфейд, остаётся в [-1,1]
+}

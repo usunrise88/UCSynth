@@ -28,6 +28,36 @@ var smokeParams = []proto.Param{
 	{ID: 12, Name: "latch", Type: proto.TypeBool, Min: 0, Max: 1, Cur: 0},
 	{ID: 13, Name: "lofi_bits", Type: proto.TypeInt, Min: 1, Max: 16, Cur: 12},
 	{ID: 14, Name: "future_param", Type: proto.TypeFloat, Min: 0, Max: 1, Cur: 0.5}, // unknown → Прочее
+	// этап 4: modulation blocks (LFO, wave-env, mod-matrix) — exercise their render paths
+	{ID: 15, Name: "lfo1_shape", Type: proto.TypeEnum, Min: 0, Max: 4, Cur: 0},
+	{ID: 16, Name: "lfo1_rate", Type: proto.TypeFloat, Min: 0.05, Max: 30, Cur: 2},
+	{ID: 17, Name: "waveenv_p1", Type: proto.TypeFloat, Min: 0, Max: 1, Cur: 0},
+	{ID: 18, Name: "waveenv_p2", Type: proto.TypeFloat, Min: 0, Max: 1, Cur: 0.5},
+	{ID: 19, Name: "waveenv_rate", Type: proto.TypeFloat, Min: 0.05, Max: 20, Cur: 1},
+	{ID: 20, Name: "waveenv_loop", Type: proto.TypeBool, Min: 0, Max: 1, Cur: 1},
+	{ID: 21, Name: "mod_wheel", Type: proto.TypeFloat, Min: 0, Max: 1, Cur: 0},
+	{ID: 22, Name: "mtx1_src", Type: proto.TypeEnum, Min: 0, Max: 7, Cur: 1},
+	{ID: 23, Name: "mtx1_dst", Type: proto.TypeEnum, Min: 0, Max: 6, Cur: 2},
+	{ID: 24, Name: "mtx1_depth", Type: proto.TypeFloat, Min: -1, Max: 1, Cur: 0.5},
+	{ID: 25, Name: "mtx2_src", Type: proto.TypeEnum, Min: 0, Max: 7, Cur: 0},
+	{ID: 26, Name: "mtx2_dst", Type: proto.TypeEnum, Min: 0, Max: 6, Cur: 0},
+	{ID: 27, Name: "mtx2_depth", Type: proto.TypeFloat, Min: -1, Max: 1, Cur: 0},
+}
+
+// TestUnlistedBlocksCatchAll pins the rack catch-all: a block with controls that isn't in rackCols
+// must surface (so it lands in the last column), never be silently dropped.
+func TestUnlistedBlocksCatchAll(t *testing.T) {
+	// all-listed blocks → no extras
+	listedOnly := map[string][]*control{"osc1": {nil}, "filter": {nil}, "modmatrix": {nil}, "reverb": {nil}}
+	if got := unlistedBlocks(listedOnly); len(got) != 0 {
+		t.Fatalf("all-listed → extras %v, want none", got)
+	}
+	// an unlisted block → returned (sorted), so rack() appends it rather than dropping it
+	mixed := map[string][]*control{"filter": {nil}, "zzz_future": {nil}, "aaa_future": {nil}}
+	got := unlistedBlocks(mixed)
+	if len(got) != 2 || got[0] != "aaa_future" || got[1] != "zzz_future" {
+		t.Fatalf("unlisted blocks → %v, want [aaa_future zzz_future]", got)
+	}
 }
 
 // TestRackLayoutSmoke lays out the panel rack with every control kind — a headless guard against

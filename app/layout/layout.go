@@ -25,6 +25,13 @@ var Blocks = []Block{
 	{"filter", "Фильтр"},
 	{"ampenv", "Огибающая VCA"},
 	{"fltenv", "Огибающая VCF"},
+	{"lfo1", "LFO 1"},
+	{"lfo2", "LFO 2"},
+	{"waveenv", "Wave-огибающая"},
+	{"modmatrix", "Мод-матрица"},
+	{"overdrive", "Overdrive"},
+	{"delay", "Delay"},
+	{"reverb", "Reverb"},
 	{"lofi", "Lo-fi"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
@@ -41,6 +48,12 @@ type Field struct {
 
 var waveLabels = []string{"Sine", "Saw", "Square", "Tri"}
 var filterLabels = []string{"LP", "HP", "BP", "OFF"}
+
+// этап 4.1 — подписи форм LFO и источников/приёмников мод-матрицы (порядок = enum в прошивке:
+// LfoShape, ModSource, ModDest в voice.h / control.h). Индекс вне диапазона → голое число (см. EnumLabel).
+var lfoShapeLabels = []string{"Sine", "Tri", "Saw", "Sqr", "S&H"}
+var modSrcLabels = []string{"—", "LFO1", "LFO2", "VCF-огиб.", "Wave-огиб.", "Velocity", "Mod-wheel", "ToF"}
+var modDstLabels = []string{"—", "Pitch", "Cutoff", "Res", "Amp", "Wave-поз.", "FX"}
 
 // byName maps a firmware param name → its presentation. Names come from control.h (stable).
 var byName = map[string]Field{
@@ -84,9 +97,55 @@ var byName = map[string]Field{
 	// lo-fi
 	"lofi":      {"lofi", "Lo-fi", "", nil},
 	"lofi_bits": {"lofi", "Биты", "", nil},
+	// этап 4.1 — LFO×2 (глубина и маршрут — в мод-матрице)
+	"lfo1_shape": {"lfo1", "Форма", "", lfoShapeLabels},
+	"lfo1_rate":  {"lfo1", "Частота", "Гц", nil},
+	"lfo2_shape": {"lfo2", "Форма", "", lfoShapeLabels},
+	"lfo2_rate":  {"lfo2", "Частота", "Гц", nil},
+	// mod-wheel — ручной источник модуляции (маршрут — в матрице)
+	"mod_wheel": {"modmatrix", "Mod-wheel", "", nil},
+	// этап 4.2 — wave-огибающая (8 точек-слайдеров + rate + loop; источник WAVE_ENV матрицы)
+	"waveenv_p1":   {"waveenv", "1", "", nil},
+	"waveenv_p2":   {"waveenv", "2", "", nil},
+	"waveenv_p3":   {"waveenv", "3", "", nil},
+	"waveenv_p4":   {"waveenv", "4", "", nil},
+	"waveenv_p5":   {"waveenv", "5", "", nil},
+	"waveenv_p6":   {"waveenv", "6", "", nil},
+	"waveenv_p7":   {"waveenv", "7", "", nil},
+	"waveenv_p8":   {"waveenv", "8", "", nil},
+	"waveenv_rate": {"waveenv", "Rate", "с", nil},
+	"waveenv_loop": {"waveenv", "Loop", "", nil},
+	// этап 5.1 — overdrive
+	"od_on":    {"overdrive", "Вкл", "", nil},
+	"od_drive": {"overdrive", "Драйв", "", nil},
+	"od_mix":   {"overdrive", "Mix", "", nil},
+	// этап 5.2 — delay (стерео)
+	"delay_on":       {"delay", "Вкл", "", nil},
+	"delay_time":     {"delay", "Время", "мс", nil},
+	"delay_feedback": {"delay", "Feedback", "", nil},
+	"delay_damp":     {"delay", "Damp", "", nil},
+	"delay_mix":      {"delay", "Mix", "", nil},
+	// этап 5.3 — reverb (Freeverb)
+	"reverb_on":    {"reverb", "Вкл", "", nil},
+	"reverb_size":  {"reverb", "Size", "", nil},
+	"reverb_damp":  {"reverb", "Damp", "", nil},
+	"reverb_width": {"reverb", "Width", "", nil},
+	"reverb_mix":   {"reverb", "Mix", "", nil},
+	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
 	"test_tone_hz": {"debug", "Частота тона", "Гц", nil},
+}
+
+// init заполняет 8 слотов мод-матрицы (src/dst — enum с подписями, depth — знаковый кноб).
+// Панель полирнётся в 4.3; пока — обычные контролы в блоке «Мод-матрица».
+func init() {
+	for s := 1; s <= 8; s++ {
+		n := strconv.Itoa(s)
+		byName["mtx"+n+"_src"] = Field{"modmatrix", n + ": ист.", "", modSrcLabels}
+		byName["mtx"+n+"_dst"] = Field{"modmatrix", n + ": назн.", "", modDstLabels}
+		byName["mtx"+n+"_depth"] = Field{"modmatrix", n + ": глуб.", "", nil}
+	}
 }
 
 // For returns the presentation of a param by name. Unknown params go to the "misc" block with
@@ -108,8 +167,12 @@ func (f Field) EnumLabel(i int) string {
 }
 
 // IsEnvSlider reports whether a param should render as a vertical fader instead of a knob — the
-// ADSR stages (…_attack/_decay/_sustain/_release), matching the reference's envelope sliders.
+// ADSR stages (…_attack/_decay/_sustain/_release) and the 8 wave-envelope breakpoints
+// (waveenv_p1..8), which side-by-side read as a small wave-shape editor.
 func IsEnvSlider(name string) bool {
+	if strings.HasPrefix(name, "waveenv_p") {
+		return true
+	}
 	for _, suf := range []string{"_attack", "_decay", "_sustain", "_release"} {
 		if strings.HasSuffix(name, suf) {
 			return true

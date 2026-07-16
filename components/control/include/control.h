@@ -66,6 +66,67 @@ typedef enum {
     PARAM_POLY_VOICES   = 31, // число голосов (int 1..8): 1 = моно со стеком нот
     PARAM_GLIDE_TIME    = 32, // портаменто: время скольжения высоты, с (0 = мгновенно)
     PARAM_LEGATO        = 33, // моно-легато (bool): перекрытие нот не ретригерит огибающую
+    // --- этап 4.1: LFO×2 + мод-матрица ---
+    PARAM_LFO1_SHAPE    = 34, // форма LFO1 (enum): 0 sine, 1 tri, 2 saw, 3 square, 4 S&H
+    PARAM_LFO1_RATE     = 35, // частота LFO1, Гц (0.05..30)
+    PARAM_LFO2_SHAPE    = 36, // форма LFO2 (enum, как LFO1)
+    PARAM_LFO2_RATE     = 37, // частота LFO2, Гц
+    PARAM_MOD_WHEEL     = 38, // mod-wheel как источник матрицы, 0..1
+    // Мод-матрица: 8 слотов, каждый {src, dst, depth} — СТРОГО подряд в этом порядке
+    // (audio.cpp читает как PARAM_MTX1_SRC + slot*3 + {0,1,2}). src: enum ModSource 0..7,
+    // dst: enum ModDest 0..6, depth: -1..1.
+    PARAM_MTX1_SRC      = 39,
+    PARAM_MTX1_DST      = 40,
+    PARAM_MTX1_DEPTH    = 41,
+    PARAM_MTX2_SRC      = 42,
+    PARAM_MTX2_DST      = 43,
+    PARAM_MTX2_DEPTH    = 44,
+    PARAM_MTX3_SRC      = 45,
+    PARAM_MTX3_DST      = 46,
+    PARAM_MTX3_DEPTH    = 47,
+    PARAM_MTX4_SRC      = 48,
+    PARAM_MTX4_DST      = 49,
+    PARAM_MTX4_DEPTH    = 50,
+    PARAM_MTX5_SRC      = 51,
+    PARAM_MTX5_DST      = 52,
+    PARAM_MTX5_DEPTH    = 53,
+    PARAM_MTX6_SRC      = 54,
+    PARAM_MTX6_DST      = 55,
+    PARAM_MTX6_DEPTH    = 56,
+    PARAM_MTX7_SRC      = 57,
+    PARAM_MTX7_DST      = 58,
+    PARAM_MTX7_DEPTH    = 59,
+    PARAM_MTX8_SRC      = 60,
+    PARAM_MTX8_DST      = 61,
+    PARAM_MTX8_DEPTH    = 62,
+    // --- этап 4.2: wave-огибающая (8 точек) + морф wavetable ---
+    // 8 уровней-брейкпоинтов [0,1] — СТРОГО подряд (audio.cpp читает как PARAM_WAVEENV_P1 + i).
+    PARAM_WAVEENV_P1    = 63,
+    PARAM_WAVEENV_P2    = 64,
+    PARAM_WAVEENV_P3    = 65,
+    PARAM_WAVEENV_P4    = 66,
+    PARAM_WAVEENV_P5    = 67,
+    PARAM_WAVEENV_P6    = 68,
+    PARAM_WAVEENV_P7    = 69,
+    PARAM_WAVEENV_P8    = 70,
+    PARAM_WAVEENV_RATE  = 71, // время полного прохода всех точек, с
+    PARAM_WAVEENV_LOOP  = 72, // зацикливать (bool): непрерывная эволюция vs один проход с hold
+    // --- этап 5.1: overdrive ---
+    PARAM_OD_ON         = 73, // overdrive вкл/вык (bool)
+    PARAM_OD_DRIVE      = 74, // драйв 0..1 (входной гейн в waveshaper)
+    PARAM_OD_MIX        = 75, // wet/dry 0..1
+    // --- этап 5.2: delay (стерео, кольцо в PSRAM) ---
+    PARAM_DELAY_ON       = 76, // delay вкл/вык (bool)
+    PARAM_DELAY_TIME     = 77, // время задержки, мс (≤1000)
+    PARAM_DELAY_FEEDBACK = 78, // обратная связь 0..0.95
+    PARAM_DELAY_DAMP     = 79, // затухание ВЧ в ОС 0..1
+    PARAM_DELAY_MIX      = 80, // wet/dry 0..1
+    // --- этап 5.3: reverb (Freeverb, PSRAM) ---
+    PARAM_REVERB_ON      = 81, // reverb вкл/вык (bool)
+    PARAM_REVERB_SIZE    = 82, // размер комнаты 0..1
+    PARAM_REVERB_DAMP    = 83, // затухание ВЧ 0..1
+    PARAM_REVERB_WIDTH   = 84, // стерео-ширина 0..1
+    PARAM_REVERB_MIX     = 85, // wet/dry 0..1
     PARAM_COUNT
 } param_id_t;
 

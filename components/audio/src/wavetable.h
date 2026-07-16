@@ -22,3 +22,7 @@ int wavetable_mip(float freq_hz);
 
 // Значение формы w по фазе [0,1) из выбранного mip, линейная интерполяция. Возврат [-1,1].
 float wavetable_sample(uint8_t w, float phase, int mip);
+
+// Морф-семпл: позиция pos ∈ [0, WAVE_COUNT-1] между базовыми формами (0 sine … 3 tri) — кроссфейд
+// соседних форм. Целая pos == прямой lookup. Таблицы одной длины на mip → фаз-когерентно, [-1,1].
+float wavetable_sample_morph(float pos, float phase, int mip);
