@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Проверка GUI-контроллера (app/) без железа и без дисплея — симметрично run-host-tests.sh:
-#  - чистые пакеты (proto/device/serial/layout) → нативные go-тесты (без C/дисплея);
-#  - весь код, включая Gio-UI → кросс-компиляция + vet на Windows (cgo-free), так UI
-#    типизируется без X11/Wayland/Vulkan-библиотек, которых в облаке нет.
-# НЕ `go test ./...` нативно: потянет ui/ (cgo + отсутствующие GL-библиотеки) и упадёт.
+#  - чистые пакеты + ui/ → нативные go-тесты (без C/дисплея). ui/ тестируется headless
+#    через input.Router (роутинг событий — чистый CPU, дисплей не нужен): там живёт
+#    регрессия на «клавиатура перехватывает клики кнопок».
+#  - весь код, включая cmd/ → кросс-компиляция + vet на Windows (cgo-free).
+# НЕ `go test ./...` нативно: cmd/controller тянет gioui.org/app (X11/Wayland/xkb), которых
+# в облаке нет, и падает на сборке. Сам ui/ от gioui.org/app не зависит — тестируется.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/app"
 
-echo "== go test (чистые пакеты) =="
-go test ./proto/... ./device/... ./serial/... ./layout/...
+echo "== go test (чистые пакеты + ui headless) =="
+go test ./proto/... ./device/... ./serial/... ./layout/... ./ui/...
 
 echo "== кросс-сборка Windows (cgo-free, вкл. UI) =="
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...

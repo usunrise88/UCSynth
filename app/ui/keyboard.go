@@ -99,8 +99,6 @@ func (k *Keyboard) AllOff() {
 
 // Layout draws the keyboard and processes mouse + QWERTY input.
 func (k *Keyboard) Layout(gtx C) D {
-	k.handleKeys(gtx)
-
 	kbW := gtx.Constraints.Max.X
 	whiteN := 7 * k.octaves
 	if whiteN == 0 || kbW == 0 {
@@ -110,6 +108,13 @@ func (k *Keyboard) Layout(gtx C) D {
 	h := gtx.Dp(150)
 	bw := ww * 2 / 3
 	bh := h * 3 / 5
+
+	// Bound the keyboard's key-event target to its own rectangle. event.Op with no clip
+	// attaches to the root (unbounded) area; recorded last (the keyboard is the final child),
+	// it would shadow pointer hit-testing for every widget above it — the connection-bar
+	// buttons then never receive their clicks. The clip scopes handleKeys' event.Op here.
+	area := clip.Rect{Max: image.Pt(kbW, h)}.Push(gtx.Ops)
+	k.handleKeys(gtx)
 
 	// dark backing (gives key separation via 1px gaps)
 	paint.FillShape(gtx.Ops, color.NRGBA{R: 20, G: 22, B: 26, A: 255},
@@ -135,6 +140,8 @@ func (k *Keyboard) Layout(gtx C) D {
 			k.drawKey(gtx, note, x, 0, bw, bh, k.blackColor(note))
 		}
 	}
+
+	area.Pop()
 
 	// poll mouse state → note on/off
 	for note, clk := range k.keys {
