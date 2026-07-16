@@ -34,7 +34,7 @@ int main()
     {
         Voice v; voice_init(&v, 1);
         VoiceParams p = defparams();
-        voice_note_on(&v, 69, 100, false);
+        voice_note_on(&v, 69, 100, false, false);
         float mx = 0.0f; bool fin = true;
         for (int b = 0; b < 50; ++b) {
             voice_render(&v, &p, SR, buf, N);
@@ -58,7 +58,7 @@ int main()
         VoiceParams p = defparams();
         p.osc[0] = { 1, 0.0f, 1.0f }; p.osc[1] = { 2, 0.1f, 1.0f }; p.osc[2] = { 3, -0.1f, 1.0f };
         p.noise_level = 1.0f; p.ring_level = 1.0f;
-        voice_note_on(&v, 60, 127, false);
+        voice_note_on(&v, 60, 127, false, false);
         float mx = 0.0f; bool fin = true;
         for (int b = 0; b < 50; ++b) {
             voice_render(&v, &p, SR, buf, N);
@@ -74,7 +74,7 @@ int main()
         Voice v; voice_init(&v, 3);
         VoiceParams p = defparams();
         p.lofi = true; p.lofi_bits = 2;
-        voice_note_on(&v, 72, 100, false);
+        voice_note_on(&v, 72, 100, false, false);
         for (int b = 0; b < 20; ++b) voice_render(&v, &p, SR, buf, N);   // прогрев в сустейн
         voice_render(&v, &p, SR, buf, N);
         float uniq[64]; int nu = 0;
@@ -91,7 +91,7 @@ int main()
         Voice v; voice_init(&v, 9);
         VoiceParams p = defparams();
         p.latch = true;
-        voice_note_on(&v, 64, 100, true);
+        voice_note_on(&v, 64, 100, true, false);
         for (int b = 0; b < 200; ++b) voice_render(&v, &p, SR, buf, N);   // в сустейн
         voice_note_off(&v, 64);
         for (int b = 0; b < 200; ++b) voice_render(&v, &p, SR, buf, N);   // latch держит
@@ -104,6 +104,22 @@ int main()
         float mx2 = 0.0f;
         for (int i = 0; i < N; ++i) { const float a = std::fabs(buf[i]); if (a > mx2) mx2 = a; }
         check(mx2 < 0.01f, "снятие latch → релиз в тишину");
+    }
+
+    // Glide (3.6): при glide=true высота НЕ снапится и скользит к target за ~glide_time;
+    // при glide=false — снап к ноте сразу.
+    {
+        Voice v; voice_init(&v, 5);            // cur_note = 69 (A4)
+        VoiceParams p = defparams();
+        p.glide_time = 0.2f;
+        voice_note_on(&v, 72, 100, false, true);          // C5, glide от 69
+        check(std::fabs(v.cur_note - 69.0f) < 0.001f, "glide: cur_note не снапнулся (осталось 69)");
+        for (int b = 0; b < 250; ++b) voice_render(&v, &p, SR, buf, N);   // ~333 мс > glide_time
+        check(std::fabs(v.cur_note - 72.0f) < 0.1f, "glide: cur_note дошёл до target (72)");
+
+        Voice v2; voice_init(&v2, 6);
+        voice_note_on(&v2, 60, 100, false, false);        // snap
+        check(std::fabs(v2.cur_note - 60.0f) < 0.001f, "snap (glide=false): cur_note = нота сразу");
     }
 
     if (g_fail == 0) printf("OK: voice — все проверки пройдены\n");

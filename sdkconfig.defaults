@@ -8,6 +8,11 @@ CONFIG_IDF_TARGET="esp32s3"
 # 240 МГц: аудио-DSP упирается в такты, берём максимум.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
+# Оптимизация -O2 (производительность): аудио-DSP float-тяжёлый, дефолтный -Og давал ~2–3× оверхед
+# (замер: 16.8%/голос на -Og). Нужно для полифонии (этап 3.5). БЕЗ -ffast-math — сломает flush
+# денормалов фильтра. Пин здесь = воспроизводимость (в сгенерированном sdkconfig иначе дефолт -Og).
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
 # --- Flash: 16 МБ (N16), QIO 80 МГц --------------------------------------------
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y

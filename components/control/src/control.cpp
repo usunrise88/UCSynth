@@ -56,6 +56,10 @@ constexpr ParamDef kParams[] = {
     // этап 3.4 — lo-fi
     /* [PARAM_LOFI]          */ { "lofi",          PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
     /* [PARAM_LOFI_BITS]     */ { "lofi_bits",     PARAM_TYPE_INT,   1.0f,   16.0f,    16.0f   },
+    // этап 3.5/3.6 — полифония + glide
+    /* [PARAM_POLY_VOICES]   */ { "poly_voices",   PARAM_TYPE_INT,   1.0f,   8.0f,     1.0f    },
+    /* [PARAM_GLIDE_TIME]    */ { "glide_time",    PARAM_TYPE_FLOAT, 0.0f,   2.0f,     0.0f    },
+    /* [PARAM_LEGATO]        */ { "legato",        PARAM_TYPE_BOOL,  0.0f,   1.0f,     0.0f    },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

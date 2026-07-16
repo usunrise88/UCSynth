@@ -24,3 +24,7 @@ void env_reset(Env *e);
 // Продвинуть на dt секунд (длительность блока), вернуть текущий уровень [0,1].
 // gate — удерживается ли нота (фронт 0→1 = attack из текущего уровня, 1→0 = release).
 float env_tick(Env *e, const EnvParams *p, bool gate, float dt);
+
+// Форсировать атаку из текущего уровня (ретригер при удержанном gate — polyphony/mono restrike).
+// prev_gate не трогаем: gate уже высокий → env_tick не увидит фронта и не сбросит стадию.
+void env_trigger(Env *e);

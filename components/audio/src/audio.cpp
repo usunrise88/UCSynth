@@ -8,7 +8,7 @@
 #include "audio.h"
 #include "control.h"
 #include "wavetable.h"
-#include "voice.h"
+#include "synth.h"
 
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -55,10 +55,11 @@ struct NoteEvent {
 };
 static QueueHandle_t s_note_q = nullptr;
 
-// Собрать параметры голоса из реестра (раз в блок, ~27 атомарных чтений — дёшево). Голос сам
+// Собрать параметры синта из реестра (раз в блок, ~30 атомарных чтений — дёшево). DSP сам
 // control не трогает — вся связь control→DSP здесь.
-static void build_voice_params(VoiceParams *vp)
+static void build_synth_params(SynthParams *sp)
 {
+    VoiceParams *vp = &sp->voice;
     vp->osc[0] = { (uint8_t)get_param(PARAM_WAVEFORM),  get_param(PARAM_OSC1_DETUNE), get_param(PARAM_OSC1_LEVEL) };
     vp->osc[1] = { (uint8_t)get_param(PARAM_OSC2_WAVE), get_param(PARAM_OSC2_DETUNE), get_param(PARAM_OSC2_LEVEL) };
     vp->osc[2] = { (uint8_t)get_param(PARAM_OSC3_WAVE), get_param(PARAM_OSC3_DETUNE), get_param(PARAM_OSC3_LEVEL) };
@@ -74,9 +75,12 @@ static void build_voice_params(VoiceParams *vp)
     vp->flt_env = { get_param(PARAM_FLT_ATTACK), get_param(PARAM_FLT_DECAY),
                     get_param(PARAM_FLT_SUSTAIN), get_param(PARAM_FLT_RELEASE),
                     get_param(PARAM_FLT_LOOP) > 0.5f };
-    vp->lofi      = get_param(PARAM_LOFI) > 0.5f;
-    vp->lofi_bits = (int)get_param(PARAM_LOFI_BITS);
-    vp->latch     = get_param(PARAM_LATCH) > 0.5f;
+    vp->lofi       = get_param(PARAM_LOFI) > 0.5f;
+    vp->lofi_bits  = (int)get_param(PARAM_LOFI_BITS);
+    vp->latch      = get_param(PARAM_LATCH) > 0.5f;
+    vp->glide_time = get_param(PARAM_GLIDE_TIME);
+    sp->poly_voices = (int)get_param(PARAM_POLY_VOICES);
+    sp->legato      = get_param(PARAM_LEGATO) > 0.5f;
 }
 
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
@@ -86,10 +90,8 @@ static void audio_task(void *arg)
     (void)arg;
 
     int16_t block[BLOCK_FRAMES * 2];   // STEREO-слот: L и R одинаковые (mono → оба канала)
-    float   fbuf[BLOCK_FRAMES];        // float-выход голоса (до мастера/клампа)
+    float   fbuf[BLOCK_FRAMES];        // float-микс синта (до мастера/клампа)
 
-    Voice voice;
-    voice_init(&voice, 0x2468ACEu);
     float tt_phase = 0.0f;             // фаза тест-тона (отдельный сквозной путь, без env/фильтра)
 
     // Осциллограф: пишем форму (до громкости) в НЕактивный буфер, по заполнении окна — флип.
@@ -99,12 +101,15 @@ static void audio_task(void *arg)
     for (;;) {
         const int64_t t_start = esp_timer_get_time();
 
-        // Дренаж нотной очереди в начале блока → моно-голос (latch/key-state — внутри voice).
-        const bool latch = get_param(PARAM_LATCH) > 0.5f;
+        // Параметры синта — до дренажа (нужны аллокатору при note-on: poly/legato/glide).
+        SynthParams sp;
+        build_synth_params(&sp);
+
+        // Дренаж нотной очереди → синт (аллокация голосов / стек нот — внутри synth).
         NoteEvent ev;
         while (xQueueReceive(s_note_q, &ev, 0) == pdTRUE) {
-            if (ev.on) voice_note_on(&voice, ev.note, ev.vel, latch);
-            else       voice_note_off(&voice, ev.note);
+            if (ev.on) synth_note_on(&sp, ev.note, ev.vel);
+            else       synth_note_off(&sp, ev.note);
         }
 
         // control-rate: мастер и режим тест-тона.
@@ -112,7 +117,7 @@ static void audio_task(void *arg)
         const bool  test_on = get_param(PARAM_TEST_TONE) > 0.5f;
 
         if (test_on) {
-            // Эталон тракта: осц1-форма на test_tone_hz, полная амплитуда, БЕЗ env/фильтра.
+            // Эталон тракта: осц1-форма на test_tone_hz, полная амплитуда, БЕЗ синта/софт-клипа.
             const float   ttf = get_param(PARAM_TEST_TONE_HZ);
             const uint8_t ttw = (uint8_t)get_param(PARAM_WAVEFORM);
             const int     ttm = wavetable_mip(ttf);
@@ -123,26 +128,27 @@ static void audio_task(void *arg)
                 if (tt_phase >= 1.0f) tt_phase -= 1.0f;
             }
         } else {
-            VoiceParams vp;
-            build_voice_params(&vp);
-            voice_render(&voice, &vp, (float)SAMPLE_RATE, fbuf, BLOCK_FRAMES);
+            synth_render(&sp, (float)SAMPLE_RATE, fbuf, BLOCK_FRAMES);   // сумма активных голосов
         }
 
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
-            float s = fbuf[i] * master;
-            if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;   // страховка перед int16 (сумма/резонанс)
+            float m = fbuf[i];
+            if (!test_on) m = m / (1.0f + fabsf(m));   // мастер софт-клип суммы голосов → [-1,1]
+            // (тест-тон уже ±1 и должен остаться чистым эталоном)
 
-            const int16_t v = (int16_t)lrintf(s * 32767.0f);
-            block[2 * i]     = v;   // L
-            block[2 * i + 1] = v;   // R
-
-            // Снимок формы (до мастера) для дисплея; по заполнении окна публикуем буфер (release).
-            s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(fbuf[i] * 127.0f);
+            // Снимок формы (после софт-клипа, до громкости) для дисплея.
+            s_scope[scope_wr][scope_pos++] = (int8_t)lrintf(m * 127.0f);
             if (scope_pos >= AUDIO_SCOPE_LEN) {
                 s_scope_ready.store(scope_wr, std::memory_order_release);
                 scope_wr ^= 1;
                 scope_pos = 0;
             }
+
+            float s = m * master;
+            if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;   // финальная страховка перед int16
+            const int16_t v = (int16_t)lrintf(s * 32767.0f);
+            block[2 * i]     = v;   // L
+            block[2 * i + 1] = v;   // R
         }
 
         // Метрики: время генерации блока против бюджета realtime (этап 1.2).
@@ -219,13 +225,16 @@ void audio_init(void)
     ESP_LOGI(TAG, "wavetable band-limited: mip-таблицы сгенерированы за %lld мс",
              (esp_timer_get_time() - t_wt) / 1000);
 
+    // Пул голосов (статический в synth) — до старта задачи.
+    synth_init();
+
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).
     s_note_q = xQueueCreate(32, sizeof(NoteEvent));
 
     // 3) Аудио-задача на Core 0 (Core 1 отдан comm/UI). Приоритет выше comm(5): звук важнее.
-    //    Стек 6 КБ: голос + VoiceParams + float-буфер живут на стеке задачи.
+    //    Стек 6 КБ: SynthParams + float-буферы на стеке (пул голосов — статический, не тут).
     xTaskCreatePinnedToCore(audio_task, "audio", 6144, nullptr, 10, nullptr, 0);
 
-    ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — голос 3.1–3.4 (3 осц/фильтр/ADSR/lofi)",
+    ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — полифония 3.5/3.6 (до 8 голосов + glide)",
              (unsigned)SAMPLE_RATE, (int)PIN_BCK, (int)PIN_WS, (int)PIN_DIN);
 }

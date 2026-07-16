@@ -62,6 +62,10 @@ typedef enum {
     // --- этап 3.4: lo-fi ---
     PARAM_LOFI          = 29, // lo-fi вкл/вык (bool): bit-crush + без band-limit (алиасинг)
     PARAM_LOFI_BITS     = 30, // разрядность bit-crush, 1..16 (16 = прозрачно)
+    // --- этап 3.5/3.6: полифония + glide ---
+    PARAM_POLY_VOICES   = 31, // число голосов (int 1..8): 1 = моно со стеком нот
+    PARAM_GLIDE_TIME    = 32, // портаменто: время скольжения высоты, с (0 = мгновенно)
+    PARAM_LEGATO        = 33, // моно-легато (bool): перекрытие нот не ретригерит огибающую
     PARAM_COUNT
 } param_id_t;
 
