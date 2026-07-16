@@ -1,4 +1,5 @@
 #include "filter.h"
+#include "dsp_hot.h"
 #include <cmath>
 
 namespace { constexpr float PI = 3.14159265f; }   // не M_PI — тот double (софтфлоат на S3)
@@ -23,7 +24,7 @@ FiltCoef filter_coef(float cutoff_hz, float resonance, float sr, uint8_t mode)
     return FiltCoef{ g, k, a1, a2, mode };
 }
 
-float filter_process(Filter *f, float in, const FiltCoef *c)
+float AUDIO_HOT filter_process(Filter *f, float in, const FiltCoef *c)
 {
     if (c->mode == FILT_OFF) return in;            // сквозной байпас
 

@@ -1,9 +1,10 @@
 // fx — реализация эффектов. overdrive (5.1) → delay (5.2) → reverb (5.3).
 #include "fx.h"
+#include "dsp_hot.h"
 
 #include <cmath>
 
-float fx_overdrive(float x, const FxParams *p)
+float AUDIO_HOT fx_overdrive(float x, const FxParams *p)
 {
     if (!p->od_on || p->od_mix <= 0.0f) return x;   // выкл / полностью dry → байпас
     const float gain = 1.0f + p->od_drive * 11.0f;  // drive 0..1 → гейн 1..12× в шейпер
@@ -23,7 +24,7 @@ void fx_delay_init(FxState *fx, float *buf_l, float *buf_r, int len)
     }
 }
 
-void fx_delay(FxState *fx, const FxParams *p, float *l, float *r, int n, float sr)
+void AUDIO_HOT fx_delay(FxState *fx, const FxParams *p, float *l, float *r, int n, float sr)
 {
     if (!p->delay_on || fx->dl_l == nullptr || fx->dl_r == nullptr) return;   // off/нет буфера → dry
 
@@ -119,7 +120,7 @@ void fx_reverb_init(FxState *fx, float *buf, int nsamples)
     }
 }
 
-void fx_reverb(FxState *fx, const FxParams *p, float *l, float *r, int n)
+void AUDIO_HOT fx_reverb(FxState *fx, const FxParams *p, float *l, float *r, int n)
 {
     if (!p->reverb_on || fx->rv_combL[0].buf == nullptr) return;   // off/нет буфера → dry
 

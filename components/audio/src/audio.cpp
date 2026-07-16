@@ -310,17 +310,24 @@ void audio_init(void)
         ESP_LOGE(TAG, "FX delay: не выделить PSRAM (%d КБ) — delay отключён", (int)(2 * dl_len * sizeof(float) / 1024));
     }
 
-    // FX reverb (Freeverb, этап 5.3) — линии гребёнок/allpass одним блоком в PSRAM (~110 КБ). Не вышло →
-    // fx_reverb_init с nullptr отключает реверб (тракт работает). Reverb — потолок CPU (замер на железе).
+    // FX reverb (Freeverb, этап 5.3) — потолок CPU. Линии гребёнок/allpass (~110 КБ) кладём во ВНУТРЕННИЙ
+    // RAM (одноцикловый доступ), а НЕ в PSRAM (медленнее, через кэш): ревер бьёт по 24 буферам на каждый
+    // выходной сэмпл, латентность PSRAM тут дорога. Не влезло во внутр. RAM → откат в PSRAM (работает).
+    // Не вышло совсем → fx_reverb_init(nullptr) отключает реверб (тракт работает).
     const int rv_n = fx_reverb_bufsize();
-    float *rv_buf = (float *)heap_caps_malloc(rv_n * sizeof(float), MALLOC_CAP_SPIRAM);
+    float *rv_buf = (float *)heap_caps_malloc(rv_n * sizeof(float), MALLOC_CAP_INTERNAL);
+    const char *rv_where = "внутр. RAM";
+    if (!rv_buf) {
+        rv_buf = (float *)heap_caps_malloc(rv_n * sizeof(float), MALLOC_CAP_SPIRAM);
+        rv_where = "PSRAM (внутр. RAM не хватило)";
+    }
     if (rv_buf) {
         fx_reverb_init(&s_fx, rv_buf, rv_n);
-        ESP_LOGI(TAG, "FX reverb: буферы в PSRAM %d КБ (Freeverb 8×гребёнка+4×allpass/канал)",
-                 (int)(rv_n * sizeof(float) / 1024));
+        ESP_LOGI(TAG, "FX reverb: буферы в %s, %d КБ (Freeverb 8×гребёнка+4×allpass/канал)",
+                 rv_where, (int)(rv_n * sizeof(float) / 1024));
     } else {
         fx_reverb_init(&s_fx, nullptr, 0);           // reverb отключён
-        ESP_LOGE(TAG, "FX reverb: не выделить PSRAM (%d КБ) — reverb отключён", (int)(rv_n * sizeof(float) / 1024));
+        ESP_LOGE(TAG, "FX reverb: не выделить %d КБ — reverb отключён", (int)(rv_n * sizeof(float) / 1024));
     }
 
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).

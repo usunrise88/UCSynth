@@ -1,4 +1,5 @@
 #include "synth.h"
+#include "dsp_hot.h"
 #include <cmath>
 
 namespace {
@@ -151,7 +152,7 @@ void synth_note_off(const SynthParams *sp, uint8_t note)
         if (s_voices[i].note == note && s_voices[i].key_down) voice_note_off(&s_voices[i], note);
 }
 
-void synth_render(const SynthParams *sp, float sr, float *out, int n)
+void AUDIO_HOT synth_render(const SynthParams *sp, float sr, float *out, int n)
 {
     int poly = sp->poly_voices < 1 ? 1 : (sp->poly_voices > SYNTH_MAX_VOICES ? SYNTH_MAX_VOICES : sp->poly_voices);
     if (poly != s_prev_poly) {                          // смена режима polyphony на лету → сброс нот
