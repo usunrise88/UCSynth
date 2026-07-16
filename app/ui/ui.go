@@ -132,8 +132,8 @@ func (n *noteSink) off(note uint8) {
 // (only "misc" today, the LIST-driven fallback) is appended to the last column.
 var rackCols = [][]string{
 	{"osc1", "osc2", "osc3", "mixer"},
-	{"filter", "ampenv", "fltenv"},
-	{"global", "lofi", "debug", "misc"},
+	{"filter", "ampenv", "fltenv", "waveenv"},
+	{"global", "lfo1", "lfo2", "modmatrix", "lofi", "debug", "misc"},
 }
 var colWeights = []float32{1, 1.15, 1}
 
@@ -526,7 +526,11 @@ func (c *Controller) column(gtx C, keys []string, byBlock map[string][]*control)
 		}
 		first = false
 		items = append(items, layout.Rigid(func(gtx C) D {
-			return vstPanel(gtx, c.th, blk.BlockTitle(k), func(gtx C) D { return c.panelBody(gtx, cs) })
+			body := func(gtx C) D { return c.panelBody(gtx, cs) }
+			if k == "modmatrix" { // compact per-slot view instead of generic pill-rows
+				body = func(gtx C) D { return c.matrixPanel(gtx, cs) }
+			}
+			return vstPanel(gtx, c.th, blk.BlockTitle(k), body)
 		}))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
