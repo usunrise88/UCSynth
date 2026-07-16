@@ -25,6 +25,9 @@ var Blocks = []Block{
 	{"filter", "Фильтр"},
 	{"ampenv", "Огибающая VCA"},
 	{"fltenv", "Огибающая VCF"},
+	{"lfo1", "LFO 1"},
+	{"lfo2", "LFO 2"},
+	{"modmatrix", "Мод-матрица"},
 	{"lofi", "Lo-fi"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
@@ -41,6 +44,12 @@ type Field struct {
 
 var waveLabels = []string{"Sine", "Saw", "Square", "Tri"}
 var filterLabels = []string{"LP", "HP", "BP", "OFF"}
+
+// этап 4.1 — подписи форм LFO и источников/приёмников мод-матрицы (порядок = enum в прошивке:
+// LfoShape, ModSource, ModDest в voice.h / control.h). Индекс вне диапазона → голое число (см. EnumLabel).
+var lfoShapeLabels = []string{"Sine", "Tri", "Saw", "Sqr", "S&H"}
+var modSrcLabels = []string{"—", "LFO1", "LFO2", "VCF-огиб.", "Wave-огиб.", "Velocity", "Mod-wheel", "ToF"}
+var modDstLabels = []string{"—", "Pitch", "Cutoff", "Res", "Amp", "Wave-поз.", "FX"}
 
 // byName maps a firmware param name → its presentation. Names come from control.h (stable).
 var byName = map[string]Field{
@@ -84,9 +93,28 @@ var byName = map[string]Field{
 	// lo-fi
 	"lofi":      {"lofi", "Lo-fi", "", nil},
 	"lofi_bits": {"lofi", "Биты", "", nil},
+	// этап 4.1 — LFO×2 (глубина и маршрут — в мод-матрице)
+	"lfo1_shape": {"lfo1", "Форма", "", lfoShapeLabels},
+	"lfo1_rate":  {"lfo1", "Частота", "Гц", nil},
+	"lfo2_shape": {"lfo2", "Форма", "", lfoShapeLabels},
+	"lfo2_rate":  {"lfo2", "Частота", "Гц", nil},
+	// mod-wheel — ручной источник модуляции (маршрут — в матрице)
+	"mod_wheel": {"modmatrix", "Mod-wheel", "", nil},
+	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
 	"test_tone_hz": {"debug", "Частота тона", "Гц", nil},
+}
+
+// init заполняет 8 слотов мод-матрицы (src/dst — enum с подписями, depth — знаковый кноб).
+// Панель полирнётся в 4.3; пока — обычные контролы в блоке «Мод-матрица».
+func init() {
+	for s := 1; s <= 8; s++ {
+		n := strconv.Itoa(s)
+		byName["mtx"+n+"_src"] = Field{"modmatrix", n + ": ист.", "", modSrcLabels}
+		byName["mtx"+n+"_dst"] = Field{"modmatrix", n + ": назн.", "", modDstLabels}
+		byName["mtx"+n+"_depth"] = Field{"modmatrix", n + ": глуб.", "", nil}
+	}
 }
 
 // For returns the presentation of a param by name. Unknown params go to the "misc" block with

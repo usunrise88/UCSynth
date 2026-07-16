@@ -14,6 +14,44 @@ struct OscSlot {
     float   level;
 };
 
+// Мод-матрица (этап 4). Источники — скаляры [-1,1] раз в блок: глобальные (LFO, mod-wheel) кладёт
+// audio.cpp в mod_src[]; пер-голосные (VCF-env, velocity, wave-env) голос подставляет сам в voice_render.
+// TOF (VL53L0X) — источник по спеке, но датчик с этапа 10 → зарезервирован, значение 0.
+// НЕ переупорядочивать: enum пишется в патчи параметром mtxN_src/dst, только дописывать перед _COUNT.
+enum ModSource : uint8_t {
+    MOD_SRC_NONE = 0,
+    MOD_SRC_LFO1,
+    MOD_SRC_LFO2,
+    MOD_SRC_VCF_ENV,
+    MOD_SRC_WAVE_ENV,   // этап 4.2 (пока 0)
+    MOD_SRC_VELOCITY,
+    MOD_SRC_MODWHEEL,
+    MOD_SRC_TOF,        // этап 10 (пока 0)
+    MOD_SRC_COUNT
+};
+
+// Приёмники. Применяются в своих точках в натуральном домене: pitch/cutoff — лог (exp2f),
+// res/amp — линейно, wave-pos — морф (4.2), FX — к параметрам эффектов (этап 5, пока нет).
+enum ModDest : uint8_t {
+    MOD_DST_NONE = 0,
+    MOD_DST_PITCH,
+    MOD_DST_CUTOFF,
+    MOD_DST_RES,
+    MOD_DST_AMP,
+    MOD_DST_WAVEPOS,    // этап 4.2
+    MOD_DST_FX,         // этап 5
+    MOD_DST_COUNT
+};
+
+static constexpr int MOD_SLOTS = 8;   // гибкая матрица: 8 роутов src→dst с глубиной
+
+// Один слот матрицы: источник, приёмник, глубина [-1,1]. src/dst == NONE → слот выключен.
+struct ModSlot {
+    uint8_t src;
+    uint8_t dst;
+    float   depth;
+};
+
 // Параметры голоса — читаются раз в блок из control, общие для всех голосов (const).
 struct VoiceParams {
     OscSlot   osc[3];
@@ -26,6 +64,8 @@ struct VoiceParams {
     int       lofi_bits;
     bool      latch;                    // дрон-защёлка: gate держится после отпускания клавиши
     float     glide_time;               // портаменто: время скольжения высоты, с (0 = мгновенно)
+    float     mod_src[MOD_SRC_COUNT];   // глобальные источники (LFO, mod-wheel), заполняет audio.cpp
+    ModSlot   mtx[MOD_SLOTS];           // мод-матрица: 8 роутов
 };
 
 struct Voice {
@@ -37,6 +77,7 @@ struct Voice {
     bool     key_down, latch_held;
     uint32_t rng;                       // xorshift32 для шума
     float    amp_prev;                  // амплитуда прошлого блока (для лерпа VCA)
+    float    velocity;                  // [0,1] сила нажатия, источник матрицы (взводится на note-on)
 };
 
 void voice_init(Voice *v, uint32_t seed);

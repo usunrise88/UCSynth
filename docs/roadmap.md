@@ -116,8 +116,10 @@ Voice allocation (round-robin / oldest-steal), 1 → 4 → 8 голосов.
 
 ## ЭТАП 4. Модуляция
 
-### 4.1 LFO ×2
-Формы волн, скорость, control-rate.
+### 4.1 LFO ×2 — 🔨 собран (замер CPU на железе за пользователем)
+Формы волн (sine/tri/saw/square/S&H), скорость, control-rate. Реализован вместе с **ядром мод-матрицы**
+(8 гибких слотов src→dst с глубиной, `voice.cpp`) — LFO без приёмника не проверить. Источники: LFO1/2,
+VCF-огиб., velocity, mod-wheel. Приёмники: pitch, cutoff, resonance, amp.
 
 ### 4.2 Wave-огибающая (8 точек, зацикливаемая)
 Гуляет по позиции в wavetable. **Ключевая фича характера.**

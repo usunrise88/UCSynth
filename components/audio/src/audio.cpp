@@ -9,6 +9,7 @@
 #include "control.h"
 #include "wavetable.h"
 #include "synth.h"
+#include "lfo.h"
 
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -79,6 +80,15 @@ static void build_synth_params(SynthParams *sp)
     vp->lofi_bits  = (int)get_param(PARAM_LOFI_BITS);
     vp->latch      = get_param(PARAM_LATCH) > 0.5f;
     vp->glide_time = get_param(PARAM_GLIDE_TIME);
+    // этап 4.1 — мод-источники + матрица. Обнуляем все источники; глобальный mod-wheel ставим здесь,
+    // LFO допишет audio_task после тика, пер-голосные (VCF-env, velocity) — сам голос в voice_render.
+    for (int s = 0; s < MOD_SRC_COUNT; ++s) vp->mod_src[s] = 0.0f;
+    vp->mod_src[MOD_SRC_MODWHEEL] = get_param(PARAM_MOD_WHEEL);
+    for (int s = 0; s < MOD_SLOTS; ++s) {
+        vp->mtx[s].src   = (uint8_t)get_param(PARAM_MTX1_SRC   + s * 3);
+        vp->mtx[s].dst   = (uint8_t)get_param(PARAM_MTX1_DST   + s * 3);
+        vp->mtx[s].depth = get_param(PARAM_MTX1_DEPTH + s * 3);
+    }
     sp->poly_voices = (int)get_param(PARAM_POLY_VOICES);
     sp->legato      = get_param(PARAM_LEGATO) > 0.5f;
 }
@@ -98,12 +108,24 @@ static void audio_task(void *arg)
     int scope_wr  = 1 - s_scope_ready.load(std::memory_order_relaxed);
     int scope_pos = 0;
 
+    // Глобальные LFO (этап 4.1): тик раз в блок (control-rate). Состояние живёт всю жизнь задачи
+    // (локали переживают итерации — из audio_task не выходим). Посев разный → LFO2 не в фазе с LFO1.
+    Lfo lfo[2];
+    lfo_reset(&lfo[0], 0xA5A50001u);
+    lfo_reset(&lfo[1], 0x5A5A0002u);
+    const float lfo_dt = (float)BLOCK_FRAMES / (float)SAMPLE_RATE;
+
     for (;;) {
         const int64_t t_start = esp_timer_get_time();
 
         // Параметры синта — до дренажа (нужны аллокатору при note-on: poly/legato/glide).
         SynthParams sp;
         build_synth_params(&sp);
+        // Тик глобальных LFO (control-rate) → мод-источники. Читатель — мод-матрица в voice_render.
+        sp.voice.mod_src[MOD_SRC_LFO1] = lfo_tick(&lfo[0], get_param(PARAM_LFO1_RATE), lfo_dt,
+                                                  (uint8_t)get_param(PARAM_LFO1_SHAPE));
+        sp.voice.mod_src[MOD_SRC_LFO2] = lfo_tick(&lfo[1], get_param(PARAM_LFO2_RATE), lfo_dt,
+                                                  (uint8_t)get_param(PARAM_LFO2_SHAPE));
 
         // Дренаж нотной очереди → синт (аллокация голосов / стек нот — внутри synth).
         NoteEvent ev;

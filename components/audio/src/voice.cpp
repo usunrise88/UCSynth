@@ -31,11 +31,12 @@ void voice_init(Voice *v, uint32_t seed)
     v->latch_held = false;
     v->rng        = seed ? seed : 0x1234567u;
     v->amp_prev   = 0.0f;
+    v->velocity   = 1.0f;                   // до первого note-on — полная (нейтрально для матрицы)
 }
 
 void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch, bool glide)
 {
-    (void)vel;                          // velocity → глубина VCA: задел (3.1 без вел-чувствительности)
+    v->velocity    = (float)vel * (1.0f / 127.0f);   // источник матрицы (этап 4); напрямую в VCA не идёт
     v->note        = note;
     v->target_note = (float)note;
     if (!glide) v->cur_note = (float)note;   // снап (свежий/idle голос или glide выкл)
@@ -67,6 +68,20 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     const float env_a = env_tick(&v->env_amp, &p->amp_env, gate, dt);
     const float env_f = env_tick(&v->env_flt, &p->flt_env, gate, dt);
 
+    // Мод-матрица (control-rate, раз в блок): собрать источники [-1,1], сложить depth·src в приёмники.
+    // Глобальные источники (LFO, mod-wheel) уже в p->mod_src; пер-голосные подставляем тут.
+    float src[MOD_SRC_COUNT];
+    for (int s = 0; s < MOD_SRC_COUNT; ++s) src[s] = p->mod_src[s];
+    src[MOD_SRC_NONE]     = 0.0f;
+    src[MOD_SRC_VCF_ENV]  = env_f;         // огибающая VCF (0..1)
+    src[MOD_SRC_VELOCITY] = v->velocity;   // сила нажатия (0..1)
+    float mod[MOD_DST_COUNT] = {0.0f};
+    for (int s = 0; s < MOD_SLOTS; ++s) {
+        const ModSlot &m = p->mtx[s];
+        if (m.src != MOD_SRC_NONE && m.dst != MOD_DST_NONE)
+            mod[m.dst] += m.depth * src[m.src];   // все нули → тракт эквивалентен доматричному
+    }
+
     // Glide: cur_note одним полюсом к target в ЛОГ-высоте (муз. скольжение), затем → Гц.
     if (p->glide_time < 1e-3f) {
         v->cur_note = v->target_note;
@@ -75,10 +90,14 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
         v->cur_note += (v->target_note - v->cur_note) * c;
         if (fabsf(v->target_note - v->cur_note) < 0.01f) v->cur_note = v->target_note;
     }
-    const float note_hz = 440.0f * exp2f((v->cur_note - 69.0f) * (1.0f / 12.0f));
+    const float note_f  = v->cur_note + mod[MOD_DST_PITCH] * 24.0f;   // ±2 окт на всю глубину
+    const float note_hz = 440.0f * exp2f((note_f - 69.0f) * (1.0f / 12.0f));
 
-    const float cutoff = p->cutoff_hz * exp2f(p->flt_env_amt * env_f * OCT);   // кламп — в filter_coef
-    const FiltCoef fc  = filter_coef(cutoff, p->resonance, sr, p->filt_mode);
+    // cutoff: flt_env_amt остаётся быстрым фикс-роутом, матрица добавляется в том же лог-домене (±OCT октав).
+    const float cutoff = p->cutoff_hz * exp2f((p->flt_env_amt * env_f + mod[MOD_DST_CUTOFF]) * OCT);
+    float reso = p->resonance + mod[MOD_DST_RES];   // линейно; итоговый кламп — в filter_coef
+    if (reso < 0.0f) reso = 0.0f; else if (reso > 1.0f) reso = 1.0f;
+    const FiltCoef fc  = filter_coef(cutoff, reso, sr, p->filt_mode);
 
     float inc[3];
     int   mip[3];
@@ -95,8 +114,10 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     const bool need_noise = p->noise_level > 0.0f;
     const bool need_ring  = p->ring_level > 0.0f;
 
+    float amp_target = env_a * (1.0f + mod[MOD_DST_AMP]);   // амп-модуляция (тремоло); depth=1 → 0..2×
+    if (amp_target < 0.0f) amp_target = 0.0f;
     float       amp      = v->amp_prev;
-    const float amp_step = (env_a - v->amp_prev) / (float)n;   // лерп амплитуды по блоку (анти-зиппер)
+    const float amp_step = (amp_target - v->amp_prev) / (float)n;   // лерп амплитуды по блоку (анти-зиппер)
     const float q        = p->lofi ? exp2f((float)(p->lofi_bits - 1)) : 1.0f;
     const float qinv     = 1.0f / q;
 
@@ -124,5 +145,5 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
         v->phase[1] += inc[1]; if (v->phase[1] >= 1.0f) v->phase[1] -= 1.0f;   //   (свободнобегущие)
         v->phase[2] += inc[2]; if (v->phase[2] >= 1.0f) v->phase[2] -= 1.0f;
     }
-    v->amp_prev = env_a;
+    v->amp_prev = amp_target;
 }

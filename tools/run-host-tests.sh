@@ -73,3 +73,26 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT6"
 
 "$OUT6"
+
+# Тест lfo (этап 4.1 — формы LFO, диапазон, фаза, S&H hold/change).
+OUT7="$(mktemp -d)/lfotest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_lfo.cpp" \
+    "$ROOT/components/audio/src/lfo.cpp" \
+    -o "$OUT7"
+
+"$OUT7"
+
+# Тест matrix (этап 4.1 — мод-матрица: источник/приёмник/глубина, аккумуляция, гард NONE, velocity).
+OUT8="$(mktemp -d)/matrixtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_matrix.cpp" \
+    "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/filter.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT8"
+
+"$OUT8"
