@@ -24,6 +24,7 @@ void voice_init(Voice *v, uint32_t seed)
     v->phase[0] = v->phase[1] = v->phase[2] = 0.0f;
     env_reset(&v->env_amp);
     env_reset(&v->env_flt);
+    waveenv_reset(&v->env_wave);
     filter_reset(&v->filt);
     v->cur_note = v->target_note = 69.0f;   // A4
     v->note       = 255;
@@ -44,6 +45,7 @@ void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch, bool glide)
     if (latch) v->latch_held = true;         // защёлка дрона взводится по note-on
     env_trigger(&v->env_amp);                // ретригер ОБЕИХ огибающих
     env_trigger(&v->env_flt);
+    waveenv_reset(&v->env_wave);             // wave-огибающая стартует заново на note-on
 }
 
 void voice_slide(Voice *v, uint8_t note, bool glide)
@@ -67,6 +69,7 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     const float dt    = (float)n / sr;
     const float env_a = env_tick(&v->env_amp, &p->amp_env, gate, dt);
     const float env_f = env_tick(&v->env_flt, &p->flt_env, gate, dt);
+    const float env_w = waveenv_tick(&v->env_wave, &p->wave_env, dt);   // wave-огибающая (0..1)
 
     // Мод-матрица (control-rate, раз в блок): собрать источники [-1,1], сложить depth·src в приёмники.
     // Глобальные источники (LFO, mod-wheel) уже в p->mod_src; пер-голосные подставляем тут.
@@ -74,6 +77,7 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     for (int s = 0; s < MOD_SRC_COUNT; ++s) src[s] = p->mod_src[s];
     src[MOD_SRC_NONE]     = 0.0f;
     src[MOD_SRC_VCF_ENV]  = env_f;         // огибающая VCF (0..1)
+    src[MOD_SRC_WAVE_ENV] = env_w;         // wave-огибающая (0..1)
     src[MOD_SRC_VELOCITY] = v->velocity;   // сила нажатия (0..1)
     float mod[MOD_DST_COUNT] = {0.0f};
     for (int s = 0; s < MOD_SLOTS; ++s) {
@@ -107,6 +111,14 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
         mip[j] = p->lofi ? 0 : wavetable_mip(f);   // lofi = mip0 → алиасинг = фича (3.4)
     }
 
+    // Wave-position (морф, этап 4.2): смещение формы от матрицы, общее на 3 осц. При wave-env(0..1) и
+    // depth=1 покрывает весь диапазон форм (×(WAVE_COUNT-1)). Нулевое смещение → дешёвый прямой lookup.
+    const float wpos  = mod[MOD_DST_WAVEPOS] * (float)(WAVE_COUNT - 1);
+    const bool  morph = wpos != 0.0f;
+    const float pos0  = (float)p->osc[0].wave + wpos;
+    const float pos1  = (float)p->osc[1].wave + wpos;
+    const float pos2  = (float)p->osc[2].wave + wpos;
+
     // CPU-скипы: не считаем осц-слот с нулевым уровнем (o0,o1 нужны при ring), шум/ring при нуле.
     const bool need0 = p->osc[0].level > 0.0f || p->ring_level > 0.0f;
     const bool need1 = p->osc[1].level > 0.0f || p->ring_level > 0.0f;
@@ -122,9 +134,12 @@ void voice_render(Voice *v, const VoiceParams *p, float sr, float *out, int n)
     const float qinv     = 1.0f / q;
 
     for (int i = 0; i < n; ++i) {
-        const float o0 = need0 ? wavetable_sample(p->osc[0].wave, v->phase[0], mip[0]) : 0.0f;
-        const float o1 = need1 ? wavetable_sample(p->osc[1].wave, v->phase[1], mip[1]) : 0.0f;
-        const float o2 = need2 ? wavetable_sample(p->osc[2].wave, v->phase[2], mip[2]) : 0.0f;
+        const float o0 = need0 ? (morph ? wavetable_sample_morph(pos0, v->phase[0], mip[0])
+                                        : wavetable_sample(p->osc[0].wave, v->phase[0], mip[0])) : 0.0f;
+        const float o1 = need1 ? (morph ? wavetable_sample_morph(pos1, v->phase[1], mip[1])
+                                        : wavetable_sample(p->osc[1].wave, v->phase[1], mip[1])) : 0.0f;
+        const float o2 = need2 ? (morph ? wavetable_sample_morph(pos2, v->phase[2], mip[2])
+                                        : wavetable_sample(p->osc[2].wave, v->phase[2], mip[2])) : 0.0f;
 
         float mix = o0 * p->osc[0].level + o1 * p->osc[1].level + o2 * p->osc[2].level;
         if (need_noise) mix += noise_next(v->rng) * p->noise_level;

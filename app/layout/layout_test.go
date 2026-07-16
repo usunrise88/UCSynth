@@ -46,6 +46,28 @@ func TestMatrixAndLFOMapped(t *testing.T) {
 	}
 }
 
+func TestWaveEnvMapped(t *testing.T) {
+	// 8 точек wave-огибающей → блок waveenv, рендер вертикальным слайдером.
+	for i := 1; i <= 8; i++ {
+		name := "waveenv_p" + strconv.Itoa(i)
+		if f := For(name); f.Block != "waveenv" {
+			t.Fatalf("%s → %+v, want waveenv", name, f)
+		}
+		if !IsEnvSlider(name) {
+			t.Fatalf("%s should render as vertical slider", name)
+		}
+	}
+	if f := For("waveenv_rate"); f.Block != "waveenv" || f.Unit != "с" {
+		t.Fatalf("waveenv_rate → %+v, want waveenv/с", f)
+	}
+	if f := For("waveenv_loop"); f.Block != "waveenv" {
+		t.Fatalf("waveenv_loop → %+v, want waveenv", f)
+	}
+	if IsEnvSlider("waveenv_rate") {
+		t.Fatal("waveenv_rate should be a knob, not a slider")
+	}
+}
+
 func TestEnumLabel(t *testing.T) {
 	f := For("waveform")
 	if f.EnumLabel(1) != "Saw" {

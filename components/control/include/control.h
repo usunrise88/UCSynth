@@ -99,6 +99,18 @@ typedef enum {
     PARAM_MTX8_SRC      = 60,
     PARAM_MTX8_DST      = 61,
     PARAM_MTX8_DEPTH    = 62,
+    // --- этап 4.2: wave-огибающая (8 точек) + морф wavetable ---
+    // 8 уровней-брейкпоинтов [0,1] — СТРОГО подряд (audio.cpp читает как PARAM_WAVEENV_P1 + i).
+    PARAM_WAVEENV_P1    = 63,
+    PARAM_WAVEENV_P2    = 64,
+    PARAM_WAVEENV_P3    = 65,
+    PARAM_WAVEENV_P4    = 66,
+    PARAM_WAVEENV_P5    = 67,
+    PARAM_WAVEENV_P6    = 68,
+    PARAM_WAVEENV_P7    = 69,
+    PARAM_WAVEENV_P8    = 70,
+    PARAM_WAVEENV_RATE  = 71, // время полного прохода всех точек, с
+    PARAM_WAVEENV_LOOP  = 72, // зацикливать (bool): непрерывная эволюция vs один проход с hold
     PARAM_COUNT
 } param_id_t;
 

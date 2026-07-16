@@ -89,6 +89,10 @@ static void build_synth_params(SynthParams *sp)
         vp->mtx[s].dst   = (uint8_t)get_param(PARAM_MTX1_DST   + s * 3);
         vp->mtx[s].depth = get_param(PARAM_MTX1_DEPTH + s * 3);
     }
+    // этап 4.2 — wave-огибающая (8 точек подряд + rate + loop)
+    for (int i = 0; i < WAVEENV_POINTS; ++i) vp->wave_env.pts[i] = get_param(PARAM_WAVEENV_P1 + i);
+    vp->wave_env.rate = get_param(PARAM_WAVEENV_RATE);
+    vp->wave_env.loop = get_param(PARAM_WAVEENV_LOOP) > 0.5f;
     sp->poly_voices = (int)get_param(PARAM_POLY_VOICES);
     sp->legato      = get_param(PARAM_LEGATO) > 0.5f;
 }

@@ -54,6 +54,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$ROOT/test/host/test_voice.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
     "$ROOT/components/audio/src/wavetable.cpp" \
     -o "$OUT5"
@@ -68,6 +69,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$ROOT/components/audio/src/synth.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
     "$ROOT/components/audio/src/wavetable.cpp" \
     -o "$OUT6"
@@ -91,8 +93,29 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$ROOT/test/host/test_matrix.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
     "$ROOT/components/audio/src/wavetable.cpp" \
     -o "$OUT8"
 
 "$OUT8"
+
+# Тест morph (этап 4.2 — wavetable-морф: кроссфейд форм, фаз-когерентность, клампы, диапазон).
+OUT9="$(mktemp -d)/morphtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_morph.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT9"
+
+"$OUT9"
+
+# Тест waveenv (этап 4.2 — wave-огибающая: точки, one-shot/hold, loop, rate, диапазон).
+OUT10="$(mktemp -d)/waveenvtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_waveenv.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
+    -o "$OUT10"
+
+"$OUT10"

@@ -90,6 +90,17 @@ constexpr ParamDef kParams[] = {
     /* [PARAM_MTX8_SRC]      */ { "mtx8_src",      PARAM_TYPE_ENUM,  0.0f,   7.0f,     0.0f    },
     /* [PARAM_MTX8_DST]      */ { "mtx8_dst",      PARAM_TYPE_ENUM,  0.0f,   6.0f,     0.0f    },
     /* [PARAM_MTX8_DEPTH]    */ { "mtx8_depth",    PARAM_TYPE_FLOAT, -1.0f,  1.0f,     0.0f    },
+    // этап 4.2 — wave-огибающая (8 точек 0..1, дефолт = рампа 0→1; rate сек; loop)
+    /* [PARAM_WAVEENV_P1]    */ { "waveenv_p1",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.0f    },
+    /* [PARAM_WAVEENV_P2]    */ { "waveenv_p2",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.143f  },
+    /* [PARAM_WAVEENV_P3]    */ { "waveenv_p3",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.286f  },
+    /* [PARAM_WAVEENV_P4]    */ { "waveenv_p4",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.429f  },
+    /* [PARAM_WAVEENV_P5]    */ { "waveenv_p5",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.571f  },
+    /* [PARAM_WAVEENV_P6]    */ { "waveenv_p6",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.714f  },
+    /* [PARAM_WAVEENV_P7]    */ { "waveenv_p7",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     0.857f  },
+    /* [PARAM_WAVEENV_P8]    */ { "waveenv_p8",    PARAM_TYPE_FLOAT, 0.0f,   1.0f,     1.0f    },
+    /* [PARAM_WAVEENV_RATE]  */ { "waveenv_rate",  PARAM_TYPE_FLOAT, 0.05f,  20.0f,    1.0f    },
+    /* [PARAM_WAVEENV_LOOP]  */ { "waveenv_loop",  PARAM_TYPE_BOOL,  0.0f,   1.0f,     1.0f    },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

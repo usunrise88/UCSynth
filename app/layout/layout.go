@@ -27,6 +27,7 @@ var Blocks = []Block{
 	{"fltenv", "Огибающая VCF"},
 	{"lfo1", "LFO 1"},
 	{"lfo2", "LFO 2"},
+	{"waveenv", "Wave-огибающая"},
 	{"modmatrix", "Мод-матрица"},
 	{"lofi", "Lo-fi"},
 	{"debug", "Отладка"},
@@ -100,6 +101,17 @@ var byName = map[string]Field{
 	"lfo2_rate":  {"lfo2", "Частота", "Гц", nil},
 	// mod-wheel — ручной источник модуляции (маршрут — в матрице)
 	"mod_wheel": {"modmatrix", "Mod-wheel", "", nil},
+	// этап 4.2 — wave-огибающая (8 точек-слайдеров + rate + loop; источник WAVE_ENV матрицы)
+	"waveenv_p1":   {"waveenv", "1", "", nil},
+	"waveenv_p2":   {"waveenv", "2", "", nil},
+	"waveenv_p3":   {"waveenv", "3", "", nil},
+	"waveenv_p4":   {"waveenv", "4", "", nil},
+	"waveenv_p5":   {"waveenv", "5", "", nil},
+	"waveenv_p6":   {"waveenv", "6", "", nil},
+	"waveenv_p7":   {"waveenv", "7", "", nil},
+	"waveenv_p8":   {"waveenv", "8", "", nil},
+	"waveenv_rate": {"waveenv", "Rate", "с", nil},
+	"waveenv_loop": {"waveenv", "Loop", "", nil},
 	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
@@ -136,8 +148,12 @@ func (f Field) EnumLabel(i int) string {
 }
 
 // IsEnvSlider reports whether a param should render as a vertical fader instead of a knob — the
-// ADSR stages (…_attack/_decay/_sustain/_release), matching the reference's envelope sliders.
+// ADSR stages (…_attack/_decay/_sustain/_release) and the 8 wave-envelope breakpoints
+// (waveenv_p1..8), which side-by-side read as a small wave-shape editor.
 func IsEnvSlider(name string) bool {
+	if strings.HasPrefix(name, "waveenv_p") {
+		return true
+	}
 	for _, suf := range []string{"_attack", "_decay", "_sustain", "_release"} {
 		if strings.HasSuffix(name, suf) {
 			return true

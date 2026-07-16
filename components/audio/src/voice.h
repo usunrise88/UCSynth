@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include "env.h"
+#include "waveenv.h"
 #include "filter.h"
 
 // Осц-слот: форма (enum WaveForm), детюн в полутонах (дробные = центы), уровень в микшере [0,1].
@@ -64,13 +65,15 @@ struct VoiceParams {
     int       lofi_bits;
     bool      latch;                    // дрон-защёлка: gate держится после отпускания клавиши
     float     glide_time;               // портаменто: время скольжения высоты, с (0 = мгновенно)
-    float     mod_src[MOD_SRC_COUNT];   // глобальные источники (LFO, mod-wheel), заполняет audio.cpp
-    ModSlot   mtx[MOD_SLOTS];           // мод-матрица: 8 роутов
+    float        mod_src[MOD_SRC_COUNT]; // глобальные источники (LFO, mod-wheel), заполняет audio.cpp
+    ModSlot      mtx[MOD_SLOTS];         // мод-матрица: 8 роутов
+    WaveEnvParams wave_env;             // wave-огибающая (источник WAVE_ENV), обычно → морф wavetable
 };
 
 struct Voice {
     float    phase[3];                  // свободнобегущие (анти-клик на легато)
     Env      env_amp, env_flt;
+    WaveEnv  env_wave;                  // третий генератор: wave-огибающая (ретригер на note-on)
     Filter   filt;
     float    cur_note, target_note;     // высота в MIDI-float: cur скользит к target (glide, 3.6)
     uint8_t  note;                      // текущая нота (для матчинга note-off)
