@@ -230,3 +230,7 @@ func boolf(b bool) float32 {
 	}
 	return 0
 }
+
+func fmtPct(v float32) string { return strconv.FormatFloat(float64(v), 'f', 1, 32) + "%" }
+func fmtF1(v float32) string  { return strconv.FormatFloat(float64(v), 'f', 1, 32) }
+func fmtInt(v float32) string { return strconv.Itoa(int(v + 0.5)) }

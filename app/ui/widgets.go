@@ -113,7 +113,7 @@ type pill struct {
 	padX   int
 	padY   int
 	radius int
-	dot    bool       // draw a leading status dot (toggles)
+	dot    bool // draw a leading status dot (toggles)
 	dotCol color.NRGBA
 }
 

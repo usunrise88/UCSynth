@@ -59,9 +59,9 @@ func (k *Knob) update(gtx C) {
 }
 
 const (
-	knobDia   = 50            // dp
-	knobStart = -2.3561945    // -135°, min at bottom-left
-	knobSweep = 4.712389      // 270°
+	knobDia   = 50         // dp
+	knobStart = -2.3561945 // -135°, min at bottom-left
+	knobSweep = 4.712389   // 270°
 )
 
 // Layout draws the knob and registers drag input. The owning control draws value + label around it.

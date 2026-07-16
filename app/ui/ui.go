@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"sync"
 
 	"gioui.org/font/gofont"
 	"gioui.org/layout"
@@ -19,8 +20,11 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
-	blk "ucsynth/app/layout"
 	"ucsynth/app/device"
+	blk "ucsynth/app/layout"
+	"ucsynth/app/midi"
+	"ucsynth/app/patch"
+	"ucsynth/app/seq"
 	"ucsynth/app/serial"
 )
 
@@ -46,6 +50,82 @@ type Controller struct {
 	controls []*control
 	builtN   int
 	plist    widget.List
+
+	// tabs: 0 synth, 1 sequencer, 2 patches
+	tab     int
+	tabBtns [3]widget.Clickable
+
+	// STAT history graphs
+	hist       statRing
+	lastUptime uint32
+	haveSample bool
+	showGraphs bool
+	metricsBtn widget.Clickable
+
+	// patches
+	store       patch.Store
+	patchList   []patch.Entry
+	patchBtns   []widget.Clickable
+	patchName   widget.Editor
+	patchPath   widget.Editor
+	saveBtn     widget.Clickable
+	reloadBtn   widget.Clickable
+	deleteBtn   widget.Clickable
+	importBtn   widget.Clickable
+	exportBtn   widget.Clickable
+	patchScroll widget.List
+	patchSel    string
+	patchMsg    string
+	patchInit   bool
+
+	// MIDI input
+	midiNames   []string
+	midiBtns    []widget.Clickable
+	midiRefresh widget.Clickable
+	midiIn      midi.Input
+	midiOpen    int // open device index, -1 = none
+	midiMsg     string
+
+	// sequencer (piano-roll)
+	player   *seq.Player
+	playBtn  widget.Clickable
+	stopBtn  widget.Clickable
+	clearBtn widget.Clickable
+	tempoDec widget.Clickable
+	tempoInc widget.Clickable
+	rollTag  struct{} // stable pointer = grid pointer-input tag
+	rollGeom rollGeom
+
+	// sink routes note on/off from the player/MIDI goroutines to the current device race-safely.
+	sink noteSink
+}
+
+// noteSink guards the current device pointer so the sequencer clock and MIDI driver goroutines can
+// emit notes while the UI goroutine connects/disconnects. The device's own note methods are already
+// thread-safe; only the pointer swap needs protection.
+type noteSink struct {
+	mu  sync.Mutex
+	dev *device.Device
+}
+
+func (n *noteSink) set(d *device.Device) { n.mu.Lock(); n.dev = d; n.mu.Unlock() }
+
+func (n *noteSink) on(note, vel uint8) {
+	n.mu.Lock()
+	d := n.dev
+	n.mu.Unlock()
+	if d != nil {
+		d.NoteOn(note, vel)
+	}
+}
+
+func (n *noteSink) off(note uint8) {
+	n.mu.Lock()
+	d := n.dev
+	n.mu.Unlock()
+	if d != nil {
+		d.NoteOff(note)
+	}
 }
 
 // rackCols assigns parameter blocks to the three VST columns (mockup layout). Any block not listed
@@ -66,23 +146,39 @@ func New(invalidate func()) *Controller {
 	c.th.Palette = material.Palette{Bg: colBg, Fg: colTxt, ContrastBg: colAccent, ContrastFg: rgb(0xFFFFFF)}
 	c.plist.Axis = layout.Vertical
 	c.kb = NewKeyboard(
-		func(n, v uint8) {
-			if c.dev != nil {
-				c.dev.NoteOn(n, v)
+		func(n, v uint8) { c.sink.on(n, v) },
+		func(n uint8) { c.sink.off(n) },
+	)
+	c.store = patch.Store{Root: patch.DefaultRoot()}
+	c.patchName.SingleLine = true
+	c.patchPath.SingleLine = true
+	c.midiOpen = -1
+	// Sequencer: 2 octaves (C3..C5), 16 steps, 120 BPM. Notes go to the device; redraw moves the playhead.
+	c.player = seq.New(16, 48, 72, 120,
+		func(note int, on bool) {
+			if on {
+				c.sink.on(uint8(note), 100)
+			} else {
+				c.sink.off(uint8(note))
 			}
 		},
-		func(n uint8) {
-			if c.dev != nil {
-				c.dev.NoteOff(n)
-			}
-		},
+		invalidate,
 	)
 	c.enumPorts()
 	return c
 }
 
-// Shutdown closes the connection (flushing held notes) at window close.
-func (c *Controller) Shutdown() { c.disconnect() }
+// Shutdown stops playback, closes MIDI, and closes the connection (flushing held notes) at window close.
+func (c *Controller) Shutdown() {
+	if c.player != nil {
+		c.player.Stop()
+	}
+	if c.midiIn != nil {
+		c.midiIn.Close()
+		c.midiIn = nil
+	}
+	c.disconnect()
+}
 
 func (c *Controller) enumPorts() {
 	ports, err := serial.List()
@@ -113,6 +209,7 @@ func (c *Controller) connect() {
 		return
 	}
 	c.dev = device.New(conn, c.invalidate)
+	c.sink.set(c.dev)
 	c.dev.Start()
 	c.controls = nil
 	c.builtN = -1
@@ -120,14 +217,24 @@ func (c *Controller) connect() {
 }
 
 func (c *Controller) disconnect() {
+	if c.player != nil {
+		c.player.Stop()
+	}
 	if c.dev != nil {
 		c.kb.AllOff()
+		c.sink.set(nil)
 		c.dev.Close()
 		c.dev = nil
 	}
 	c.controls = nil
 	c.builtN = -1
 }
+
+const (
+	tabSynth = iota
+	tabSeq
+	tabPatches
+)
 
 // Layout renders one frame.
 func (c *Controller) Layout(gtx C) D {
@@ -141,20 +248,80 @@ func (c *Controller) Layout(gtx C) D {
 	if c.dev != nil {
 		snap = c.dev.Snapshot()
 		c.syncControls(snap)
+		c.sampleStat(snap)
 	}
 
 	return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx C) D {
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		flex := []layout.FlexChild{
 			layout.Rigid(func(gtx C) D { return c.layoutTopBar(gtx, snap) }),
+		}
+		if c.showGraphs {
+			flex = append(flex,
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+				layout.Rigid(func(gtx C) D { return graphCard(gtx, c.th, &c.hist) }),
+			)
+		}
+		flex = append(flex,
 			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-			layout.Flexed(1, func(gtx C) D { return c.layoutRack(gtx) }),
-			layout.Rigid(func(gtx C) D { return c.layoutToneBanner(gtx, snap) }),
+			layout.Rigid(c.layoutTabs),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-			layout.Rigid(func(gtx C) D { return card(gtx, colLine, colPanel, func(gtx C) D { return c.kb.Layout(gtx, c.th) }) }),
-			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-			layout.Rigid(c.layoutFooter),
+			layout.Flexed(1, func(gtx C) D { return c.layoutTab(gtx, snap) }),
 		)
+		if c.tab == tabSynth { // keyboard only on the synth tab (sequencer needs the height)
+			flex = append(flex,
+				layout.Rigid(func(gtx C) D { return c.layoutToneBanner(gtx, snap) }),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+				layout.Rigid(func(gtx C) D {
+					return card(gtx, colLine, colPanel, func(gtx C) D { return c.kb.Layout(gtx, c.th) })
+				}),
+			)
+		}
+		flex = append(flex,
+			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+			layout.Rigid(func(gtx C) D { return c.layoutFooter(gtx) }),
+		)
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, flex...)
 	})
+}
+
+func (c *Controller) layoutTab(gtx C, snap device.Snapshot) D {
+	switch c.tab {
+	case tabSeq:
+		return c.layoutPianoRoll(gtx)
+	case tabPatches:
+		return c.layoutPatches(gtx)
+	default:
+		return c.layoutRack(gtx)
+	}
+}
+
+func (c *Controller) layoutTabs(gtx C) D {
+	names := []string{"Синт", "Секвенсор", "Патчи"}
+	children := make([]layout.FlexChild, 0, len(names)*2)
+	for i, n := range names {
+		i, n := i, n
+		children = append(children, layout.Rigid(func(gtx C) D {
+			return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx C) D {
+				return c.tabBtns[i].Layout(gtx, func(gtx C) D {
+					return btnPill(c.tab == i, false, false).draw(gtx, c.th, n)
+				})
+			})
+		}))
+	}
+	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
+}
+
+// sampleStat appends a new STAT sample to the history ring when the device reports a fresh one.
+func (c *Controller) sampleStat(snap device.Snapshot) {
+	if snap.State != device.Synced {
+		return
+	}
+	if c.haveSample && snap.Stat.UptimeMS == c.lastUptime {
+		return
+	}
+	c.lastUptime = snap.Stat.UptimeMS
+	c.haveSample = true
+	c.hist.push(snap.Stat)
 }
 
 func (c *Controller) handleButtons(gtx C) {
@@ -181,6 +348,24 @@ func (c *Controller) handleButtons(gtx C) {
 		if id, ok := paramID(c.dev.Snapshot(), "test_tone"); ok {
 			c.dev.SetParam(id, 0)
 		}
+	}
+	for i := range c.tabBtns {
+		if c.tabBtns[i].Clicked(gtx) {
+			c.setTab(i)
+		}
+	}
+	if c.metricsBtn.Clicked(gtx) {
+		c.showGraphs = !c.showGraphs
+	}
+	c.handlePatches(gtx)
+	c.handleMidi(gtx)
+	c.handleSeq(gtx)
+}
+
+func (c *Controller) setTab(t int) {
+	c.tab = t
+	if t == tabPatches {
+		c.refreshPatches()
 	}
 }
 
@@ -246,16 +431,22 @@ func (c *Controller) obtn(gtx C, b *widget.Clickable, lbl string, accent, danger
 }
 
 func (c *Controller) metricsText(gtx C, snap device.Snapshot) D {
-	if c.dev == nil {
-		return label(c.th, unit.Sp(12.5), c.status, colMuted).Layout(gtx)
-	}
-	if snap.State != device.Synced {
-		return D{}
-	}
-	s := snap.Stat
-	txt := fmt.Sprintf("CPU %.1f%%     underruns %d     heap %.1fМ     up %dс",
-		float64(s.CPUPermille)/10, s.Underruns, float64(s.Heap)/1048576, s.UptimeMS/1000)
-	return label(c.th, unit.Sp(12.5), txt, colMuted).Layout(gtx)
+	return c.metricsBtn.Layout(gtx, func(gtx C) D {
+		if c.dev == nil {
+			return label(c.th, unit.Sp(12.5), c.status, colMuted).Layout(gtx)
+		}
+		if snap.State != device.Synced {
+			return label(c.th, unit.Sp(12.5), "…", colFaint).Layout(gtx)
+		}
+		s := snap.Stat
+		txt := fmt.Sprintf("CPU %.1f%%   underruns %d   heap %.1fМ   up %dс   графики ▾",
+			float64(s.CPUPermille)/10, s.Underruns, float64(s.Heap)/1048576, s.UptimeMS/1000)
+		col := colMuted
+		if c.showGraphs {
+			col = colAccentB
+		}
+		return label(c.th, unit.Sp(12.5), txt, col).Layout(gtx)
+	})
 }
 
 func (c *Controller) statusDot(gtx C, snap device.Snapshot) D {
@@ -435,15 +626,7 @@ func (c *Controller) layoutToneBanner(gtx C, snap device.Snapshot) D {
 }
 
 func (c *Controller) layoutFooter(gtx C) D {
-	return card(gtx, colLine, colPanel, func(gtx C) D {
-		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(label(c.th, unit.Sp(11), "ПАТЧИ", colMuted).Layout),
-			layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
-			layout.Flexed(1, label(c.th, unit.Sp(12),
-				"JSON-дерево · импорт/экспорт · MIDI-вход · piano-roll · графики истории STAT — следующий слой",
-				colFaint).Layout),
-		)
-	})
+	return card(gtx, colLine, colPanel, func(gtx C) D { return c.layoutMidiRow(gtx) })
 }
 
 func (c *Controller) setParam(id uint16, val float32) {
