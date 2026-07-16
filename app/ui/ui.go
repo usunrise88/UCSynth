@@ -165,6 +165,7 @@ func New(invalidate func()) *Controller {
 		invalidate,
 	)
 	c.enumPorts()
+	c.enumMidi()
 	return c
 }
 

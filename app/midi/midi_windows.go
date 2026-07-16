@@ -64,19 +64,35 @@ type winMsg struct {
 	ptY     int32
 }
 
-// live diagnostics, surfaced in the MIDI status line so a failure is legible on the user's machine.
+// live diagnostics, surfaced in the MIDI status line so a failure is legible on the user's machine
+// (I cannot run the WinMM transport here). Each is stored +1 so 0 means "not attempted yet".
 var (
-	dbgCount atomic.Uint64
-	dbgLast  atomic.Uint32
+	dbgOpen  atomic.Uint32 // midiInOpen MMRESULT + 1
+	dbgStart atomic.Uint32 // midiInStart MMRESULT + 1
+	dbgPump  atomic.Bool   // GetMessage loop is running
+	dbgCount atomic.Uint64 // MM_MIM_DATA messages seen
+	dbgLast  atomic.Uint32 // last packed message
 )
 
-// Debug reports how many MIDI messages arrived and the last raw packed message (hex), or "".
+// Debug reports the transport state so a failure is diagnosable from the running app:
+// open=<code> start=<code> pump msgs=<n> last=<hex>. Empty until the first Open attempt.
 func Debug() string {
-	n := dbgCount.Load()
-	if n == 0 {
+	o := dbgOpen.Load()
+	if o == 0 {
 		return ""
 	}
-	return "сообщений " + utoa(n) + " · " + hex6(dbgLast.Load())
+	s := "open=" + utoa(uint64(o-1))
+	if v := dbgStart.Load(); v > 0 {
+		s += " start=" + utoa(uint64(v-1))
+	}
+	if dbgPump.Load() {
+		s += " pump"
+	}
+	s += " msgs=" + utoa(dbgCount.Load())
+	if dbgCount.Load() > 0 {
+		s += " last=" + hex6(dbgLast.Load())
+	}
+	return s
 }
 
 type winInput struct {
@@ -107,6 +123,12 @@ func List() ([]string, error) {
 }
 
 func Open(index int, handler func(Message)) (Input, error) {
+	dbgOpen.Store(0)
+	dbgStart.Store(0)
+	dbgPump.Store(false)
+	dbgCount.Store(0)
+	dbgLast.Store(0)
+
 	w := &winInput{done: make(chan struct{})}
 	tidCh := make(chan uint32, 1)
 	started := make(chan error, 1)
@@ -125,6 +147,8 @@ func Open(index int, handler func(Message)) (Input, error) {
 		if err := <-started; err != nil {
 			return // open/start failed; nothing to pump
 		}
+		dbgPump.Store(true)
+		defer dbgPump.Store(false)
 		for {
 			r, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
 			if int32(r) <= 0 { // 0 = WM_QUIT, -1 = error
@@ -147,11 +171,14 @@ func Open(index int, handler func(Message)) (Input, error) {
 		0,
 		callbackThread,
 	)
+	dbgOpen.Store(uint32(ret) + 1)
 	if ret != 0 {
 		started <- errors.New("open")
 		return nil, errors.New("midiInOpen не удалось (код " + utoa(uint64(ret)) + ")")
 	}
-	if r, _, _ := pMidiInStart.Call(w.handle); r != 0 {
+	r, _, _ := pMidiInStart.Call(w.handle)
+	dbgStart.Store(uint32(r) + 1)
+	if r != 0 {
 		pMidiInClose.Call(w.handle)
 		started <- errors.New("start")
 		return nil, errors.New("midiInStart не удалось (код " + utoa(uint64(r)) + ")")

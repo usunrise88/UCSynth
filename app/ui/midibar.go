@@ -87,15 +87,19 @@ func (c *Controller) layoutMidiRow(gtx C) D {
 			}),
 		)
 	}
+	// Status + always-on transport diagnostic, left-aligned right after the chips so it can't be
+	// pushed off the right edge (helps diagnose MIDI on the user's machine, which I can't run).
 	status := c.midiMsg
-	if c.midiOpen >= 0 {
-		if d := midi.Debug(); d != "" {
-			status += " · " + d
+	if d := midi.Debug(); d != "" {
+		if status != "" {
+			status += "  ·  "
 		}
+		status += d
 	}
 	children = append(children,
+		layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+		layout.Rigid(label(c.th, unit.Sp(12), status, colMuted).Layout),
 		layout.Flexed(1, func(gtx C) D { return D{Size: gtx.Constraints.Min} }),
-		layout.Rigid(label(c.th, unit.Sp(12), status, colFaint).Layout),
 	)
 	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
 }
