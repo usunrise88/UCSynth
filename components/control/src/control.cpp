@@ -154,6 +154,9 @@ uint16_t param_count(void)
 float set_param(uint16_t id, float value)
 {
     if (id >= PARAM_COUNT) return NAN;
+    // NaN с провода отклоняем ДО записи: кламп его не ловит (оба сравнения для NaN ложны),
+    // а NaN в параметре отравляет feedback-состояния FX навсегда (NaN·0 = NaN).
+    if (std::isnan(value)) return g_values[id].load(std::memory_order_relaxed);
     const float v = clamp_and_quantize(kParams[id], value);
     g_values[id].store(v, std::memory_order_relaxed);
     return v;

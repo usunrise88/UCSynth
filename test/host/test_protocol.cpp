@@ -72,6 +72,23 @@ int main() {
         CHECK(std::fabs(f32(&s.frames[0][3]) - 1.0f) < 1e-6f, "SET 9 -> кламп 1.0");
     }
 
+    // --- SET NaN -> отклонён (гард: кламп NaN не ловит, а NaN отравил бы feedback-состояния DSP);
+    //     ±inf кламп ловит штатно (inf > max / -inf < min) ---
+    {
+        int v[4]; f32_bytes(NAN, v);
+        run({ CMD_SET, 0x00, 0x00, v[0], v[1], v[2], v[3] });
+        CHECK(!std::isnan(get_param(0)) && std::fabs(get_param(0) - 1.0f) < 1e-6f,
+              "SET NaN -> отклонён, реестр не изменился");
+        f32_bytes(INFINITY, v);
+        run({ CMD_SET, 0x00, 0x00, v[0], v[1], v[2], v[3] });
+        CHECK(std::fabs(get_param(0) - 1.0f) < 1e-6f, "SET +inf -> кламп к max");
+        f32_bytes(-INFINITY, v);
+        run({ CMD_SET, 0x00, 0x00, v[0], v[1], v[2], v[3] });
+        CHECK(std::fabs(get_param(0) - 0.0f) < 1e-6f, "SET -inf -> кламп к min");
+        f32_bytes(0.8f, v);                            // вернуть дефолт для последующих проверок
+        run({ CMD_SET, 0x00, 0x00, v[0], v[1], v[2], v[3] });
+    }
+
     // --- GET неверный id ---
     {
         auto s = run({ CMD_GET, 0x63, 0x00 });  // id=99

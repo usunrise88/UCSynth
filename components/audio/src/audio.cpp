@@ -198,6 +198,8 @@ static void audio_task(void *arg)
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             float L = chL[i], R = chR[i];
             if (!test_on) {                              // wet эффектов может выйти за ±1 → жёсткий предел
+                if (!(L == L)) L = 0.0f;                 // NaN-флаш: NaN проскакивает клампы (сравнения ложь)
+                if (!(R == R)) R = 0.0f;                 //   и уехал бы в lrintf()/ЦАП мимо мастер-громкости
                 if (L > 1.0f) L = 1.0f; else if (L < -1.0f) L = -1.0f;   // (сухой уже нормирован → no-op)
                 if (R > 1.0f) R = 1.0f; else if (R < -1.0f) R = -1.0f;
             }
