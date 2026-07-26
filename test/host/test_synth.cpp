@@ -105,6 +105,45 @@ int main()
       const float after = render_peak(&sp, buf, N, 80);
       check(after > steady * 1.3f, "non-legato: перекрытие ретригерит (подскок)"); }
 
+    // note-on и note-off в ОДНОМ блоке (оба до первого рендера) — реально бывает: audio_task
+    // дренит очередь целиком, а comm разбирает до 128 байт входа подряд, так что пара кадров из
+    // одного USB-пакета кладётся за микросекунды. Голос обязан отпуститься (регресс B-01).
+    { synth_init(); SynthParams sp = defsp(4, 0.0f, false);
+      synth_note_on(&sp, 60, 100);
+      synth_note_off(&sp, 60);                          // ← без synth_render между ними
+      for (int b = 0; b < 400; ++b) synth_render(&sp, SR, buf, N);
+      check(synth_active_count() == 0, "poly: note-on+off в одном блоке → голос освободился");
+      check(render_peak(&sp, buf, N, 20) < 0.001f, "poly: и не звучит"); }
+
+    { synth_init(); SynthParams sp = defsp(1, 0.0f, false);
+      synth_note_on(&sp, 60, 100);
+      synth_note_off(&sp, 60);
+      for (int b = 0; b < 400; ++b) synth_render(&sp, SR, buf, N);
+      check(synth_active_count() == 0, "моно: note-on+off в одном блоке → голос освободился"); }
+
+    // Уменьшение polyphony: голоса выше нового предела обязаны дотикать релиз до IDLE, а не
+    // висеть «активными» вечно (регресс B-10 — их огибающие не двигались, т.к. не рендерились).
+    { synth_init(); SynthParams sp = defsp(8, 0.0f, false);
+      synth_set_poly(8);
+      synth_note_on(&sp, 60, 100); synth_note_on(&sp, 64, 100);
+      synth_note_on(&sp, 67, 100); synth_note_on(&sp, 71, 100);
+      synth_render(&sp, SR, buf, N);
+      check(synth_active_count() == 4, "poly-смена: 4 голоса до смены");
+      sp.poly_voices = 1;
+      synth_set_poly(1);                                // = all-notes-off
+      for (int b = 0; b < 4000; ++b) synth_render(&sp, SR, buf, N);   // ~5 с
+      check(synth_active_count() == 0, "poly 8→1: голоса выше предела дотикали релиз до IDLE"); }
+
+    // Смена polyphony и note-on в одном блоке: synth_set_poly идёт ДО дренажа очереди, поэтому
+    // нота не должна быть съедена вызванным ею all-notes-off (регресс B-32).
+    { synth_init(); SynthParams sp = defsp(4, 0.0f, false);
+      synth_set_poly(4); synth_render(&sp, SR, buf, N);
+      sp.poly_voices = 2;
+      synth_set_poly(2);                                // порядок как в audio_task
+      synth_note_on(&sp, 60, 100);
+      synth_render(&sp, SR, buf, N);
+      check(synth_active_count() == 1, "смена poly + note-on в одном блоке → нота не пропала"); }
+
     // Суммирование: 4 голоса → сырой микс заметно >1 голоса и конечен; мастер-софтклип → ≤1
     { synth_init(); SynthParams sp = defsp(4, 0.0f, false);
       synth_note_on(&sp, 48, 100); synth_note_on(&sp, 52, 100);

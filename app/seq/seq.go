@@ -11,7 +11,14 @@ import (
 )
 
 // Player is the sequencer. Construct with New; drive playback with Start/Stop.
+//
+// Two mutexes, deliberately. mu guards the fields and is never held across an emit, so UI reads of
+// the grid stay fast even when a device write blocks. emitMu serializes the whole
+// read-sounding-set → emit sequence between advance and Stop: without it Stop could take the set
+// advance had just recorded, send NOTE_OFF for notes advance has not sounded yet, and then advance
+// would sound them — with the transport already stopped, so nothing would ever release them.
 type Player struct {
+	emitMu   sync.Mutex
 	mu       sync.Mutex
 	steps    int
 	lo, hi   int // inclusive MIDI pitch range
@@ -125,6 +132,9 @@ func (p *Player) Start() {
 
 // Stop halts playback and releases any sounding notes.
 func (p *Player) Stop() {
+	p.emitMu.Lock()
+	defer p.emitMu.Unlock()
+
 	p.mu.Lock()
 	if !p.playing {
 		p.mu.Unlock()
@@ -147,8 +157,12 @@ func (p *Player) Stop() {
 }
 
 // advance performs one step: release the previous step's notes, move to the next step, sound it.
-// Emit calls happen outside the lock so a blocking device write can't stall UI access to the grid.
+// Emit calls happen outside p.mu so a blocking device write can't stall UI access to the grid, but
+// under p.emitMu so they can't interleave with Stop's — see emitMu.
 func (p *Player) advance() {
+	p.emitMu.Lock()
+	defer p.emitMu.Unlock()
+
 	p.mu.Lock()
 	if !p.playing {
 		p.mu.Unlock()

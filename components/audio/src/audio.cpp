@@ -145,6 +145,9 @@ static void audio_task(void *arg)
         // Параметры синта — до дренажа (нужны аллокатору при note-on: poly/legato/glide).
         SynthParams sp;
         build_synth_params(&sp);
+        // Режим полифонии — тоже до дренажа: смена poly делает all-notes-off, и нота, пришедшая
+        // в этом же блоке, иначе получила бы key_down=false сразу после аллокации и пропала.
+        synth_set_poly(sp.poly_voices);
         // Тик глобальных LFO (control-rate) → мод-источники. Читатель — мод-матрица в voice_render.
         sp.voice.mod_src[MOD_SRC_LFO1] = lfo_tick(&lfo[0], get_param(PARAM_LFO1_RATE), lfo_dt,
                                                   (uint8_t)get_param(PARAM_LFO1_SHAPE));
@@ -229,18 +232,28 @@ static void audio_task(void *arg)
     }
 }
 
+// Асимметрия таймаутов намеренная. Потерянный NOTE_ON лишь неслышен, потерянный NOTE_OFF — вечный
+// дрон: голос остаётся с открытым gate, других механизмов релиза нет, и снять его можно только
+// повторным нажатием той же ноты. Поэтому note-off ждёт место в очереди (зовут из comm_task на
+// Core 1 — блокироваться на десятки мс там можно), а note-on по-прежнему не ждёт.
+static constexpr TickType_t NOTE_OFF_WAIT = pdMS_TO_TICKS(20);
+
 void audio_note_on(uint8_t note, uint8_t vel)
 {
     if (!s_note_q) return;
     const NoteEvent ev = { 1, note, vel };
-    xQueueSend(s_note_q, &ev, 0);   // не блокируемся (зовут с Core 1); переполнение → событие теряется
+    if (xQueueSend(s_note_q, &ev, 0) != pdTRUE) {   // не блокируемся (зовут с Core 1)
+        ESP_LOGW(TAG, "нотная очередь полна — NOTE_ON %u потерян", (unsigned)note);
+    }
 }
 
 void audio_note_off(uint8_t note)
 {
     if (!s_note_q) return;
     const NoteEvent ev = { 0, note, 0 };
-    xQueueSend(s_note_q, &ev, 0);
+    if (xQueueSend(s_note_q, &ev, NOTE_OFF_WAIT) != pdTRUE) {
+        ESP_LOGE(TAG, "нотная очередь полна — NOTE_OFF %u потерян, нота залипнет", (unsigned)note);
+    }
 }
 
 void audio_scope_read(int8_t *out)

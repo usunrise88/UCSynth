@@ -40,6 +40,23 @@ int main()
     check(retrig > during_rel && retrig > 0.2f && e.stage == ENV_ATTACK,
           "ретригер из release — атака от текущего уровня, без сброса в 0");
 
+    // env_trigger + note-off ДО первого тика: gate так и не побывал высоким на тике, но огибающая
+    // ОБЯЗАНА уйти в release и дойти до idle. Иначе голос застревает в sustain навсегда — снять его
+    // нечем, потому что второго спада gate уже не будет (регресс B-01).
+    Env et; env_reset(&et);
+    env_trigger(&et);                                           // нота взята (аллокатор голоса)
+    for (int i = 0; i < 400; ++i) env_tick(&et, &p, false, dt);  // ...и снята до первого тика
+    check(et.stage == ENV_IDLE && approx(et.level, 0.0f, 0.01f),
+          "note-off до первого тика → release→idle (не застревает в sustain)");
+
+    // Тот же env_trigger, но gate удержан — стадия не сбрасывается, атака идёт (регресс не в другую сторону)
+    Env et2; env_reset(&et2);
+    for (int i = 0; i < 300; ++i) env_tick(&et2, &p, true, dt);  // в сустейн
+    env_trigger(&et2);
+    check(et2.stage == ENV_ATTACK, "env_trigger при удержанном gate → ATTACK");
+    const float rt = env_tick(&et2, &p, true, dt);
+    check(et2.stage == ENV_ATTACK && rt > 0.5f, "ретригер при удержанном gate: атака от сустейна");
+
     // кламп мин-времени: attack=0 → без NaN, быстро к 1
     EnvParams pf{ 0.0f, 0.01f, 0.5f, 0.01f, false };
     Env e2; env_reset(&e2);

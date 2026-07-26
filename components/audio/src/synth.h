@@ -20,6 +20,12 @@ struct SynthParams {
 };
 
 void synth_init(void);
+
+// Установить режим полифонии. Звать ДО обработки нотных событий блока: смена poly сбрасывает все
+// ноты (all-notes-off), и если сделать это после дренажа очереди, только что взятая нота получит
+// key_down=false и молча пропадёт.
+void synth_set_poly(int poly);
+
 void synth_note_on(const SynthParams *sp, uint8_t note, uint8_t vel);
 void synth_note_off(const SynthParams *sp, uint8_t note);
 

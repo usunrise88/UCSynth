@@ -24,7 +24,12 @@ void env_reset(Env *e)
 
 void env_trigger(Env *e)
 {
-    e->stage = ENV_ATTACK;   // уровень сохраняем (анти-клик), prev_gate не трогаем
+    e->stage     = ENV_ATTACK;   // уровень сохраняем (анти-клик)
+    // prev_gate=true — «нота взята», хотя тика ещё не было. Ретригер при удержанном gate от этого
+    // не меняется (фронта нет, стадия остаётся ATTACK), а вот note-off ДО первого тика теперь даёт
+    // спад 1→0 и голос уходит в RELEASE. Без этого gate и prev_gate оба false → фронта нет никогда,
+    // и голос навсегда застревает в SUSTAIN (нота на весь блок короче 1.33 мс = вечный дрон).
+    e->prev_gate = true;
 }
 
 float env_tick(Env *e, const EnvParams *p, bool gate, float dt)

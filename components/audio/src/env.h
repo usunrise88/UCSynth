@@ -26,5 +26,6 @@ void env_reset(Env *e);
 float env_tick(Env *e, const EnvParams *p, bool gate, float dt);
 
 // Форсировать атаку из текущего уровня (ретригер при удержанном gate — polyphony/mono restrike).
-// prev_gate не трогаем: gate уже высокий → env_tick не увидит фронта и не сбросит стадию.
+// Взводит prev_gate: при удержанном gate фронта не будет (стадия останется ATTACK), а если note-off
+// придёт раньше первого тика — env_tick увидит спад и уйдёт в release, а не застрянет в sustain.
 void env_trigger(Env *e);

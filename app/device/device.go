@@ -55,9 +55,10 @@ func (s Snapshot) Param(id uint16) (proto.Param, bool) {
 }
 
 const (
-	setFlushHz = 40                     // SET coalesce flush rate
-	statPollMs = 500                    // STAT poll cadence (~2 Hz)
-	closeGrace = 30 * time.Millisecond  // let the writer flush NOTE_OFFs before teardown
+	setFlushHz  = 40                    // SET coalesce flush rate
+	statPollMs  = 500                   // STAT poll cadence (~2 Hz)
+	closeGrace  = 30 * time.Millisecond // let the writer flush NOTE_OFFs before teardown
+	noteOffWait = 50 * time.Millisecond // how long a NOTE_OFF waits for queue room (see NoteOff)
 )
 
 type Device struct {
@@ -131,24 +132,34 @@ func (d *Device) NoteOn(note, vel uint8) {
 	d.enqueue(d.noteCh, proto.NoteOnFrame(note, vel))
 }
 
-func (d *Device) NoteOff(note uint8) {
+// NoteOff releases a note. A dropped NOTE_ON is merely inaudible, but a dropped NOTE_OFF is a
+// permanent drone — the firmware holds the gate open and nothing else releases it. So this waits for
+// room in the queue, and forgets the note only once the frame is actually queued: clearing d.held
+// first would lose the note twice, since AllNotesOff (the Panic button) walks d.held to recover.
+func (d *Device) NoteOff(note uint8) { d.noteOffBy(note, time.Now().Add(noteOffWait)) }
+
+func (d *Device) noteOffBy(note uint8, deadline time.Time) bool {
+	if !d.enqueueBy(d.noteCh, proto.NoteOffFrame(note), deadline) {
+		return false // still held — Panic can retry
+	}
 	d.mu.Lock()
 	delete(d.held, note)
 	d.mu.Unlock()
-	d.enqueue(d.noteCh, proto.NoteOffFrame(note))
+	return true
 }
 
 // AllNotesOff sends NOTE_OFF for every currently-held note (panic; no all-off opcode exists).
+// One deadline covers the whole batch, so a stalled writer can't freeze the caller per-note.
 func (d *Device) AllNotesOff() {
-	d.mu.Lock()
+	d.mu.RLock()
 	notes := make([]uint8, 0, len(d.held))
 	for n := range d.held {
 		notes = append(notes, n)
 	}
-	d.held = map[uint8]bool{}
-	d.mu.Unlock()
+	d.mu.RUnlock()
+	deadline := time.Now().Add(noteOffWait)
 	for _, n := range notes {
-		d.enqueue(d.noteCh, proto.NoteOffFrame(n))
+		d.noteOffBy(n, deadline)
 	}
 }
 
@@ -313,11 +324,37 @@ func (d *Device) write(f []byte) {
 	}
 }
 
-func (d *Device) enqueue(ch chan []byte, f []byte) {
+// enqueue is best-effort: drop when full. Only for frames the model can re-derive — SETs go via the
+// pending map, and LIST/GET/STAT are re-requested or repeated on a ticker.
+func (d *Device) enqueue(ch chan []byte, f []byte) bool {
 	select {
 	case ch <- f:
+		return true
 	case <-d.done:
-	default: // channel full — drop (notes are transient; SETs go via the pending map)
+		return false
+	default:
+		return false
+	}
+}
+
+// enqueueBy is enqueue with a deadline, for frames whose loss is unrecoverable (NOTE_OFF).
+func (d *Device) enqueueBy(ch chan []byte, f []byte, deadline time.Time) bool {
+	select { // fast path: room available, or already shutting down
+	case ch <- f:
+		return true
+	case <-d.done:
+		return false
+	default:
+	}
+	t := time.NewTimer(time.Until(deadline))
+	defer t.Stop()
+	select {
+	case ch <- f:
+		return true
+	case <-d.done:
+		return false
+	case <-t.C:
+		return false
 	}
 }
 

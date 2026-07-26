@@ -105,8 +105,9 @@ type Controller struct {
 // emit notes while the UI goroutine connects/disconnects. The device's own note methods are already
 // thread-safe; only the pointer swap needs protection.
 type noteSink struct {
-	mu  sync.Mutex
-	dev *device.Device
+	mu   sync.Mutex
+	dev  *device.Device
+	midi map[uint8]bool // ноты, зажатые по MIDI-входу — их некому снять, кроме нас (см. midiAllOff)
 }
 
 func (n *noteSink) set(d *device.Device) { n.mu.Lock(); n.dev = d; n.mu.Unlock() }
@@ -125,6 +126,50 @@ func (n *noteSink) off(note uint8) {
 	d := n.dev
 	n.mu.Unlock()
 	if d != nil {
+		d.NoteOff(note)
+	}
+}
+
+// midiOn/midiOff — вход с внешней MIDI-клавиатуры. В отличие от экранной клавиатуры (k.mouse/k.kbd)
+// и секвенсора (p.sounding) у MIDI-нот нет своего владельца: если закрыть транспорт с зажатой
+// клавишей, Release физически некуда прийти. Поэтому держим набор здесь.
+func (n *noteSink) midiOn(note, vel uint8) {
+	n.mu.Lock()
+	d := n.dev
+	if n.midi == nil {
+		n.midi = map[uint8]bool{}
+	}
+	n.midi[note] = true
+	n.mu.Unlock()
+	if d != nil {
+		d.NoteOn(note, vel)
+	}
+}
+
+func (n *noteSink) midiOff(note uint8) {
+	n.mu.Lock()
+	d := n.dev
+	delete(n.midi, note)
+	n.mu.Unlock()
+	if d != nil {
+		d.NoteOff(note)
+	}
+}
+
+// midiAllOff снимает все ноты, зажатые по MIDI. Звать перед закрытием/переключением MIDI-входа.
+func (n *noteSink) midiAllOff() {
+	n.mu.Lock()
+	d := n.dev
+	notes := make([]uint8, 0, len(n.midi))
+	for note := range n.midi {
+		notes = append(notes, note)
+	}
+	n.midi = map[uint8]bool{}
+	n.mu.Unlock()
+	if d == nil {
+		return
+	}
+	for _, note := range notes {
 		d.NoteOff(note)
 	}
 }
@@ -177,6 +222,7 @@ func (c *Controller) Shutdown() {
 		c.player.Stop()
 	}
 	if c.midiIn != nil {
+		c.sink.midiAllOff()
 		c.midiIn.Close()
 		c.midiIn = nil
 	}

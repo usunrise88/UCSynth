@@ -26,6 +26,9 @@ func (c *Controller) enumMidi() {
 // toggleMidi opens device i (closing any open one), or closes it if it is already open.
 func (c *Controller) toggleMidi(i int) {
 	if c.midiIn != nil {
+		// Снять зажатые MIDI-ноты ДО закрытия транспорта: после Close() note-off по ним не придёт
+		// никогда, и нота будет звучать до Panic.
+		c.sink.midiAllOff()
 		c.midiIn.Close()
 		c.midiIn = nil
 	}
@@ -50,9 +53,9 @@ func (c *Controller) toggleMidi(i int) {
 func (c *Controller) onMidi(m midi.Message) {
 	switch m.Kind {
 	case midi.NoteOn:
-		c.sink.on(m.Data1, m.Data2)
+		c.sink.midiOn(m.Data1, m.Data2)
 	case midi.NoteOff:
-		c.sink.off(m.Data1)
+		c.sink.midiOff(m.Data1)
 	}
 	if c.invalidate != nil {
 		c.invalidate()
