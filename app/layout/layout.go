@@ -53,7 +53,9 @@ var filterLabels = []string{"LP", "HP", "BP", "OFF"}
 // LfoShape, ModSource, ModDest в voice.h / control.h). Индекс вне диапазона → голое число (см. EnumLabel).
 var lfoShapeLabels = []string{"Sine", "Tri", "Saw", "Sqr", "S&H"}
 var modSrcLabels = []string{"—", "LFO1", "LFO2", "VCF-огиб.", "Wave-огиб.", "Velocity", "Mod-wheel", "ToF"}
-var modDstLabels = []string{"—", "Pitch", "Cutoff", "Res", "Amp", "Wave-поз.", "FX"}
+// FX убран: эффекты считаются один раз после суммы голосов, а матрица пер-голосная — приёмник
+// существовал в GUI, но DSP его не читал, и слот тратился молча (см. ModDest в voice.h).
+var modDstLabels = []string{"—", "Pitch", "Cutoff", "Res", "Amp", "Wave-поз."}
 
 // byName maps a firmware param name → its presentation. Names come from control.h (stable).
 var byName = map[string]Field{

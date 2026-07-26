@@ -48,9 +48,11 @@ struct FxState {
     int    dl_len;        // длина буфера, сэмплы (= 1 с)
     int    dl_wr;         // индекс записи
     float  dl_lp_l, dl_lp_r;  // состояние one-pole LP в цепи ОС (damp)
+    bool   dl_was_on;     // для детекта фронта off→on (чистка кольца, см. fx_delay)
     // --- reverb (5.3): Freeverb, буферы гребёнок/allpass — в едином PSRAM-блоке (nullptr → нет реверба) ---
     Comb    rv_combL[RV_NCOMB], rv_combR[RV_NCOMB];
     Allpass rv_apL[RV_NAP],     rv_apR[RV_NAP];
+    bool    rv_was_on;    // для детекта фронта off→on (чистка линий, см. fx_reverb)
 };
 
 // Привязать кольцевые буферы delay (len сэмплов каждый), обнулить их и сбросить состояние.

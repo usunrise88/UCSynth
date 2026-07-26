@@ -99,7 +99,13 @@ void AUDIO_HOT voice_render(Voice *v, const VoiceParams *p, float sr, float *out
         v->cur_note += (v->target_note - v->cur_note) * c;
         if (fabsf(v->target_note - v->cur_note) < 0.01f) v->cur_note = v->target_note;
     }
-    const float note_f  = v->cur_note + mod[MOD_DST_PITCH] * 24.0f;   // ±2 окт на всю глубину
+    // Кламп суммы матрицы обязателен: 8 слотов × depth ±1 дают mod[PITCH] до ±8, то есть ±192
+    // полутона. Плюс детюн ±24 — и частота осциллятора уходит далеко за Найквист, где inc > 1 и
+    // фазовый аккумулятор перестаёт заворачиваться (см. заворот в конце функции). Ограничиваем
+    // одним слотом на полную глубину: ±2 октавы, как и обещает документация приёмника.
+    float pitch_mod = mod[MOD_DST_PITCH];
+    if (pitch_mod < -1.0f) pitch_mod = -1.0f; else if (pitch_mod > 1.0f) pitch_mod = 1.0f;
+    const float note_f  = v->cur_note + pitch_mod * 24.0f;   // ±2 окт на всю глубину
     const float note_hz = 440.0f * exp2f((note_f - 69.0f) * (1.0f / 12.0f));
 
     // cutoff: flt_env_amt остаётся быстрым фикс-роутом, матрица добавляется в том же лог-домене (±OCT октав).
@@ -161,9 +167,15 @@ void AUDIO_HOT voice_render(Voice *v, const VoiceParams *p, float sr, float *out
         out[i] = s;
 
         amp += amp_step;
-        v->phase[0] += inc[0]; if (v->phase[0] >= 1.0f) v->phase[0] -= 1.0f;   // фазы всегда двигаем
-        v->phase[1] += inc[1]; if (v->phase[1] >= 1.0f) v->phase[1] -= 1.0f;   //   (свободнобегущие)
-        v->phase[2] += inc[2]; if (v->phase[2] >= 1.0f) v->phase[2] -= 1.0f;
+        // Заворот через floorf, а не одним вычитанием: при inc > 1 (частота выше sample rate)
+        // вычесть единицу недостаточно, фаза растёт со скоростью inc−1 и уже не возвращается в
+        // [0,1). Дальше теряется точность float — на ~1.7e7 ulp равен 2, дробная часть залипает и
+        // осциллятор отдаёт константу (тишина), а выше 2^31 конверсия (int)phase — UB. Кламп
+        // pitch-модуляции выше делает inc > 1 недостижимым штатно, но заворот должен быть верен
+        // сам по себе: это состояние живёт всю жизнь ноты и деградирует необратимо.
+        v->phase[0] += inc[0]; v->phase[0] -= floorf(v->phase[0]);   // фазы всегда двигаем
+        v->phase[1] += inc[1]; v->phase[1] -= floorf(v->phase[1]);   //   (свободнобегущие)
+        v->phase[2] += inc[2]; v->phase[2] -= floorf(v->phase[2]);
     }
     v->amp_prev = amp_target;
 }

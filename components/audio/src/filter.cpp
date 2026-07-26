@@ -17,8 +17,16 @@ FiltCoef filter_coef(float cutoff_hz, float resonance, float sr, uint8_t mode)
     if (fc < 20.0f) fc = 20.0f;                    // низ — против денормалов g
     if (fc > fmax)  fc = fmax;
 
+    // Кламп резонанса здесь, как и обещает filter.h. Раньше клампился только cutoff, а единственный
+    // вызывающий (voice.cpp) клампил res сам — то есть контракт держался на дисциплине вызывающего.
+    // При resonance > 1.0101 множитель k уходит в минус, что означает отрицательное демпфирование и
+    // разнос SVF. Мина под будущего вызывающего, поэтому закрываем в самой функции.
+    float res = resonance;
+    if (!(res >= 0.0f)) res = 0.0f;                 // ложь и для NaN
+    else if (res > 1.0f) res = 1.0f;
+
     const float g  = tanf(PI * fc / sr);
-    const float k  = 2.0f - 1.98f * resonance;     // k∈[0.02,2] (floor запечён: self-osc без разноса)
+    const float k  = 2.0f - 1.98f * res;           // k∈[0.02,2] (floor запечён: self-osc без разноса)
     const float a1 = 1.0f / (1.0f + g * (g + k));  // реципрок — раз в блок, не в семпловом цикле
     const float a2 = g * a1;
     return FiltCoef{ g, k, a1, a2, mode };
