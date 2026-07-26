@@ -79,12 +79,26 @@ func (p *Player) Clear() {
 	p.cells = map[[2]int]bool{}
 }
 
+// stepInterval must be called with p.mu held.
 func (p *Player) stepInterval() time.Duration {
 	// 16th notes: four steps per quarter-note beat.
 	return time.Minute / time.Duration(p.bpm*4)
 }
 
-// SetBPM changes tempo, restarting the clock if playing.
+// interval is stepInterval for callers that do not hold the lock (the clock goroutine).
+func (p *Player) interval() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stepInterval()
+}
+
+// SetBPM changes tempo. Playback keeps its position: the clock goroutine picks the new interval up on
+// its next tick.
+//
+// It used to Stop()+Start(), which also reset cur to -1 and released every sounding note — so nudging
+// the tempo on step 11 of a 16-step pattern jumped back to step 0 with the sound cut. It also opened
+// the Stop-vs-advance window on every single click, making tempo tweaking the most likely way to
+// strand a note.
 func (p *Player) SetBPM(bpm int) {
 	if bpm < 20 {
 		bpm = 20
@@ -94,12 +108,7 @@ func (p *Player) SetBPM(bpm int) {
 	}
 	p.mu.Lock()
 	p.bpm = bpm
-	restart := p.playing
 	p.mu.Unlock()
-	if restart {
-		p.Stop()
-		p.Start()
-	}
 }
 
 // Start begins playback from before step 0 (the first tick sounds step 0).
@@ -119,12 +128,18 @@ func (p *Player) Start() {
 	go func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
+		cur := interval
 		for {
 			select {
 			case <-stop:
 				return
 			case <-t.C:
 				p.advance()
+				// Pick up tempo changes without restarting the transport (see SetBPM).
+				if want := p.interval(); want != cur {
+					cur = want
+					t.Reset(want)
+				}
 			}
 		}
 	}()

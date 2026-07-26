@@ -13,17 +13,27 @@ package midi
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var (
-	winmm    = syscall.NewLazyDLL("winmm.dll")
-	user32   = syscall.NewLazyDLL("user32.dll")
-	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	// NewLazySystemDLL, а не syscall.NewLazyDLL: последний использует штатный порядок поиска
+	// LoadLibrary, где каталог exe идёт РАНЬШЕ System32. user32/kernel32 процесс уже загрузил и они
+	// неуязвимы, а winmm подгружается лениво — положи ucsynth-controller.exe рядом с посторонним
+	// winmm.dll, и первый же midi.List() при старте GUI выполнит чужой код. NewLazySystemDLL
+	// форсирует LOAD_LIBRARY_SEARCH_SYSTEM32. В stdlib его нет, берём из x/sys/windows — он и так
+	// уже в зависимостях (через gio), новой поставки не добавляется.
+	winmm    = windows.NewLazySystemDLL("winmm.dll")
+	user32   = windows.NewLazySystemDLL("user32.dll")
+	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 
 	pMidiInGetNumDevs  = winmm.NewProc("midiInGetNumDevs")
 	pMidiInGetDevCapsW = winmm.NewProc("midiInGetDevCapsW")
@@ -128,28 +138,72 @@ func ensureClass() {
 		hInst, _, _ := pGetModuleHandleW.Call(0)
 		wc := wndClassExW{lpfnWndProc: pDefWindowProcW.Addr(), hInstance: hInst, lpszClassName: className}
 		wc.cbSize = uint32(unsafe.Sizeof(wc))
-		pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))) // ignore "already registered"
+		syscall.SyscallN(pRegisterClassExW.Addr(), uintptr(unsafe.Pointer(&wc))) // ignore "already registered"
+		runtime.KeepAlive(&wc)
 	})
 }
 
+// closeTimeout bounds the wait for the message pump to exit. Close is called from the UI goroutine
+// (toggleMidi, Shutdown), so an unbounded wait here freezes the window.
+const closeTimeout = 2 * time.Second
+
 type winInput struct {
-	tid  uint32
-	done chan struct{}
+	tid     uint32
+	done    chan struct{}
+	pumping atomic.Bool // true only while GetMessage is actually being called
 }
 
+// Close stops the pump. Two things it deliberately does not do: post WM_QUIT to a thread id whose
+// pump has already exited (Windows reuses thread ids, and Gio holds several threads with their own
+// message loops — one of them runs the app window, so a stray WM_QUIT could close it), and wait
+// forever if the post fails or the pump is wedged.
 func (w *winInput) Close() error {
-	pPostThreadMessageW.Call(uintptr(w.tid), wmQuit, 0, 0)
-	<-w.done
+	if !w.pumping.Load() {
+		w.waitDone() // already finishing on its own
+		return nil
+	}
+	r, _, err := pPostThreadMessageW.Call(uintptr(w.tid), wmQuit, 0, 0)
+	if r == 0 {
+		// The pump most likely exited between the check above and this call. Give it the normal
+		// grace period, then report rather than hang.
+		if w.waitDone() {
+			return nil
+		}
+		return fmt.Errorf("MIDI: PostThreadMessage(WM_QUIT) не удался и насос не завершился: %w", err)
+	}
+	if !w.waitDone() {
+		return errors.New("MIDI: насос сообщений не завершился за " + closeTimeout.String())
+	}
 	return nil
 }
 
+func (w *winInput) waitDone() bool {
+	select {
+	case <-w.done:
+		return true
+	case <-time.After(closeTimeout):
+		return false
+	}
+}
+
+// List returns one entry per device, in device-id order.
+//
+// A device whose caps cannot be read gets a placeholder name and is NEVER skipped: the caller passes
+// the slice index straight to Open, which passes it to midiInOpen as uDeviceID. A gap here therefore
+// opens a DIFFERENT device than the one clicked — the port opens fine, MM_MIM_OPEN arrives, and the
+// keys go to a port nobody is listening on. Caps are cosmetic; the id is load-bearing.
 func List() ([]string, error) {
 	n, _, _ := pMidiInGetNumDevs.Call()
-	var names []string
+	names := make([]string, 0, n)
 	for i := uintptr(0); i < n; i++ {
 		var caps midiInCapsW
-		if ret, _, _ := pMidiInGetDevCapsW.Call(i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps)); ret == 0 {
+		ret, _, _ := syscall.SyscallN(pMidiInGetDevCapsW.Addr(),
+			i, uintptr(unsafe.Pointer(&caps)), unsafe.Sizeof(caps))
+		runtime.KeepAlive(&caps)
+		if ret == 0 {
 			names = append(names, syscall.UTF16ToString(caps.szPname[:]))
+		} else {
+			names = append(names, "MIDI-вход "+utoa(uint64(i))+" (имя недоступно, код "+utoa(uint64(ret))+")")
 		}
 	}
 	return names, nil
@@ -175,7 +229,8 @@ func Open(index int, handler func(Message)) (Input, error) {
 		defer close(w.done)
 
 		hInst, _, _ := pGetModuleHandleW.Call(0)
-		hwnd, _, _ := pCreateWindowExW.Call(0, uintptr(unsafe.Pointer(className)), 0, 0, 0, 0, 0, 0, hwndMessage(), 0, hInst, 0)
+		hwnd, _, _ := syscall.SyscallN(pCreateWindowExW.Addr(),
+			0, uintptr(unsafe.Pointer(className)), 0, 0, 0, 0, 0, 0, hwndMessage(), 0, hInst, 0)
 		tid, _, _ := pGetCurrentThreadId.Call()
 		w.tid = uint32(tid)
 		if hwnd == 0 {
@@ -186,7 +241,9 @@ func Open(index int, handler func(Message)) (Input, error) {
 		dbgStage.Store(2)
 
 		var handle uintptr
-		ret, _, _ := pMidiInOpen.Call(uintptr(unsafe.Pointer(&handle)), uintptr(index), hwnd, 0, callbackWindow)
+		ret, _, _ := syscall.SyscallN(pMidiInOpen.Addr(),
+			uintptr(unsafe.Pointer(&handle)), uintptr(index), hwnd, 0, callbackWindow)
+		runtime.KeepAlive(&handle)
 		dbgCode.Store(uint32(ret))
 		if ret != 0 {
 			dbgStage.Store(3)
@@ -204,11 +261,13 @@ func Open(index int, handler func(Message)) (Input, error) {
 			return
 		}
 		dbgStage.Store(6)
-		res <- nil // started OK — Open returns; the pump continues below
+		w.pumping.Store(true)
+		defer w.pumping.Store(false) // Close must not post WM_QUIT to a tid we no longer own
+		res <- nil                   // started OK — Open returns; the pump continues below
 
 		var msg winMsg
 		for {
-			r, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
+			r, _, _ := syscall.SyscallN(pGetMessageW.Addr(), uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
 			if int32(r) <= 0 { // 0 = WM_QUIT, -1 = error
 				break
 			}
@@ -220,7 +279,7 @@ func Open(index int, handler func(Message)) (Input, error) {
 				dbgLast.Store(raw)
 				handler(ParseWord(raw))
 			} else {
-				pDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
+				syscall.SyscallN(pDispatchMessageW.Addr(), uintptr(unsafe.Pointer(&msg)))
 			}
 		}
 		pMidiInStop.Call(handle)

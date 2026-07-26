@@ -6,6 +6,7 @@ package patch
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,19 +14,51 @@ import (
 	"strings"
 )
 
+// FormatVersion is the on-disk patch format version. Bump it when the MEANING of stored values
+// changes (a rescaled parameter, a renamed key), not when parameters are merely added — unknown names
+// are skipped on load, so additions are already backwards-compatible.
+const FormatVersion = 1
+
 // Patch is one saved sound: a display name and parameter values keyed by firmware param name.
 type Patch struct {
-	Name   string             `json:"name"`
-	Params map[string]float32 `json:"params"`
+	// Format identifies the file as ours and pins the value semantics. Without it "not our JSON" and
+	// "our empty patch" were indistinguishable: any object at all loaded successfully as an empty
+	// patch, and the GUI reported "импортирован (0 парам.)" instead of an error.
+	Format  string             `json:"format"`
+	Version int                `json:"version"`
+	Name    string             `json:"name"`
+	Params  map[string]float32 `json:"params"`
 }
 
+const formatTag = "ucsynth-patch"
+
 // Marshal/Unmarshal are the on-disk JSON codec (indented, human-readable).
-func Marshal(p Patch) ([]byte, error) { return json.MarshalIndent(p, "", "  ") }
+func Marshal(p Patch) ([]byte, error) {
+	p.Format = formatTag
+	if p.Version == 0 {
+		p.Version = FormatVersion
+	}
+	return json.MarshalIndent(p, "", "  ")
+}
 
 func Unmarshal(b []byte) (Patch, error) {
 	var p Patch
 	if err := json.Unmarshal(b, &p); err != nil {
 		return Patch{}, err
+	}
+	// Files written before the format tag existed have no "format" key but do carry "params" — accept
+	// those, reject anything that is neither.
+	if p.Format != formatTag {
+		if p.Format != "" {
+			return Patch{}, fmt.Errorf("это не патч UCSynth (format=%q)", p.Format)
+		}
+		if p.Params == nil {
+			return Patch{}, errors.New("это не патч UCSynth (нет ни format, ни params)")
+		}
+	}
+	if p.Version > FormatVersion {
+		return Patch{}, fmt.Errorf("патч версии %d — новее, чем понимает этот пульт (%d)",
+			p.Version, FormatVersion)
 	}
 	if p.Params == nil {
 		p.Params = map[string]float32{}
@@ -83,7 +116,36 @@ func (s Store) Save(rel string, p Patch) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(fp, b, 0o644)
+	return writeAtomic(fp, b)
+}
+
+// writeAtomic writes via a temp file in the same directory plus a rename, so an interrupted save
+// cannot destroy the previous version. os.WriteFile opens with O_TRUNC: it zeroes the file first, so a
+// crash / full disk / pulled drive mid-write left an empty or truncated .json — Load then fails to
+// parse and the old patch is already gone.
+func writeAtomic(fp string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(fp), ".tmp-"+filepath.Base(fp)+"-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once the rename succeeded
+
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil { // data on disk before the rename makes it visible
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil { // CreateTemp makes it 0600
+		return err
+	}
+	return os.Rename(tmp, fp)
 }
 
 func (s Store) Load(rel string) (Patch, error) {
@@ -141,7 +203,7 @@ func ExportFile(path string, p Patch) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	return writeAtomic(path, b)
 }
 
 // ImportFile reads a patch JSON from an arbitrary path.

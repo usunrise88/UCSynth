@@ -116,3 +116,54 @@ func TestStartStopIdempotent(t *testing.T) {
 		t.Fatalf("cur should reset to -1 after Stop, got %d", p.Cur())
 	}
 }
+
+// Changing tempo must not restart the pattern. SetBPM used to Stop()+Start(), which reset cur to −1
+// and released every sounding note — nudging the tempo on step 11 of 16 jumped back to step 0 with the
+// sound cut, and it opened the Stop-vs-advance window on every click.
+func TestSetBPMKeepsPosition(t *testing.T) {
+	var mu sync.Mutex
+	var ons int
+	p := New(16, 60, 60, 300, func(_ int, on bool) {
+		if on {
+			mu.Lock()
+			ons++
+			mu.Unlock()
+		}
+	}, nil)
+	for s := 0; s < 16; s++ {
+		p.Toggle(s, 60)
+	}
+
+	p.Start()
+	defer p.Stop()
+
+	// Let it walk a few steps.
+	deadline := time.Now().Add(2 * time.Second)
+	for p.Cur() < 3 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	before := p.Cur()
+	if before < 3 {
+		t.Fatalf("clock did not advance past step 3 (got %d)", before)
+	}
+
+	p.SetBPM(200)
+	if !p.Playing() {
+		t.Fatal("SetBPM stopped the transport")
+	}
+	if got := p.Cur(); got < before {
+		t.Fatalf("SetBPM rewound the pattern: step %d → %d", before, got)
+	}
+	if p.BPM() != 200 {
+		t.Fatalf("BPM not applied: %d", p.BPM())
+	}
+
+	// And the new interval is actually picked up: the pattern keeps advancing.
+	deadline = time.Now().Add(2 * time.Second)
+	for p.Cur() == before && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if p.Cur() == before {
+		t.Fatal("clock stopped advancing after SetBPM")
+	}
+}
