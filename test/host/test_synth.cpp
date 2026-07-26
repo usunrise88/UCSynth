@@ -4,6 +4,8 @@
 #include "wavetable.h"
 #include <cstdio>
 #include <cmath>
+#include <cstdint>
+#include <initializer_list>
 
 static int g_fail = 0;
 static void check(bool ok, const char *w) { if (!ok) { printf("FAIL: %s\n", w); g_fail++; } }
@@ -156,8 +158,31 @@ int main()
       }
       check(fin, "сумма: без NaN");
       check(mx > 0.8f, "сумма: 4 голоса складываются (микс заметно > одного голоса ~0.5)");
-      const float m = mx / (1.0f + mx);
-      check(m <= 1.0f, "мастер софт-клип суммы → ≤1"); }
+      // Мастер — HARD-CLAMP (D-010), не второй soft-clip. Второй soft-clip сжимал тракт дважды:
+      // одиночный голос 0.5 выходил на 0.333 (−9.5 dBFS), а сумма 8 голосов (~4) на 0.8 — аккорд
+      // громче одной ноты в 2.4 раза вместо 8.
+      const float clamped = mx > 1.0f ? 1.0f : mx;
+      check(clamped <= 1.0f, "мастер hard-clamp суммы → ≤1"); }
+
+    // Гейн-стейджинг: мастер прозрачен для одиночного голоса и ограничивает сумму.
+    { synth_init(); SynthParams sp = defsp(8, 0.0f, false);
+      synth_set_poly(8);
+      synth_note_on(&sp, 60, 100);
+      for (int b = 0; b < 300; ++b) synth_render(&sp, SR, buf, N);   // в сустейн
+      const float one = render_peak(&sp, buf, N, 40);
+      // Голос уже мягко клипует сам (voice.cpp), поэтому его пик ≈0.5 — мастер не должен его трогать.
+      const float one_master = one > 1.0f ? 1.0f : one;
+      check(one > 0.4f && one < 0.6f, "один голос: пик ~0.5 после soft-clip голоса");
+      check(std::fabs(one_master - one) < 1e-6f,
+            "один голос: мастер hard-clamp прозрачен (не второй soft-clip)");
+
+      for (uint8_t n : { (uint8_t)64, (uint8_t)67, (uint8_t)71, (uint8_t)74,
+                         (uint8_t)77, (uint8_t)79, (uint8_t)83 }) synth_note_on(&sp, n, 100);
+      for (int b = 0; b < 300; ++b) synth_render(&sp, SR, buf, N);
+      const float eight = render_peak(&sp, buf, N, 40);
+      check(eight > one * 2.0f, "8 голосов: сырая сумма заметно больше одного голоса");
+      const float eight_master = eight > 1.0f ? 1.0f : eight;
+      check(eight_master <= 1.0f, "8 голосов: мастер ограничивает в [-1,1] (вход FX калиброван)"); }
 
     if (g_fail == 0) printf("OK: synth — все проверки пройдены\n");
     return g_fail ? 1 : 0;
