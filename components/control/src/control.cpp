@@ -130,8 +130,13 @@ std::atomic<float> g_values[PARAM_COUNT];
 
 float clamp_and_quantize(const ParamDef &d, float v)
 {
-    if (v < d.min) v = d.min;
-    if (v > d.max) v = d.max;
+    // Сравнения инвертированы намеренно: для NaN и `v < min`, и `v > max` ложны, поэтому прямой
+    // кламп пропускает NaN как есть. А NaN, попавший в g_values, отравляет аудио-тракт и
+    // рециркулирует в кольцах delay/reverb через умножение на feedback — выход остаётся мусором
+    // даже после записи корректного значения, до перезагрузки. Проверять значение обязаны мы:
+    // set_param — единственные ворота, и в них приходит произвольное 32-битное слово с провода.
+    if (!(v >= d.min)) v = d.min;   // ложь для NaN и для v < min
+    if (!(v <= d.max)) v = d.max;   // ложь для +Inf и для v > max
     if (d.type != PARAM_TYPE_FLOAT) v = std::roundf(v);  // INT/ENUM/BOOL дискретны
     return v;
 }

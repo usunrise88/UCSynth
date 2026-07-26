@@ -33,12 +33,14 @@ size_t frame_encode(const uint8_t *body, size_t body_len, uint8_t *out, size_t o
 // Потоковый декодер: корми по байту. Возвращает true ровно когда собран валидный кадр —
 // тогда *body_out указывает внутрь декодера, *body_len_out = длина тела (валидны до
 // следующего вызова). Иначе накапливает/ресинхронизируется.
+//
+// Модель — накопитель + рескан, та же, что на PC-стороне (app/proto/frame.go, tools/serialtest.py).
+// Байтовый автомат тут не годится: он потребляет необратимо (увидев sync, берёт следующий байт как
+// LEN и съедает LEN+2), поэтому кадр, начавшийся внутри окна ложного синка, уничтожался целиком.
 typedef struct {
-    uint8_t  state;
-    uint8_t  len;
-    uint8_t  idx;
-    uint8_t  crc0;                    // младший байт CRC, пока ждём старший
-    uint8_t  body[FRAME_MAX_BODY];
+    int      n;                        // накоплено байт в buf
+    uint8_t  buf[FRAME_MAX_SIZE];      // sync(2)+len(1)+body(255)+crc(2)
+    uint8_t  body[FRAME_MAX_BODY];     // выданное тело (валидно до следующего вызова)
 } frame_decoder_t;
 
 void frame_decoder_init(frame_decoder_t *d);

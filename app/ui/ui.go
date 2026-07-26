@@ -25,6 +25,7 @@ import (
 	blk "ucsynth/app/layout"
 	"ucsynth/app/midi"
 	"ucsynth/app/patch"
+	"ucsynth/app/proto"
 	"ucsynth/app/seq"
 	"ucsynth/app/serial"
 )
@@ -509,6 +510,21 @@ func (c *Controller) statusDot(gtx C, snap device.Snapshot) D {
 		default:
 			col, txt = colErr, snap.State.String()
 		}
+		// Everything below is a failure the firmware or the link reported and that used to be
+		// invisible: a short registry (a knob silently missing), a rejected command, or a board that
+		// stopped answering with the port still open.
+		if snap.Missing > 0 {
+			col = colWarn
+			txt += fmt.Sprintf("  ·  не пришло параметров: %d", snap.Missing)
+		}
+		if snap.Stale {
+			col = colErr
+			txt += "  ·  плата не отвечает"
+		}
+		if snap.LastErr != 0 {
+			col = colWarn
+			txt += "  ·  " + errCodeText(snap.LastErr)
+		}
 		if snap.Err != nil {
 			txt = snap.State.String() + ": " + snap.Err.Error()
 		}
@@ -518,6 +534,21 @@ func (c *Controller) statusDot(gtx C, snap device.Snapshot) D {
 		layout.Rigid(layout.Spacer{Width: unit.Dp(7)}.Layout),
 		layout.Rigid(label(c.th, unit.Sp(12.5), txt, colMuted).Layout),
 	)
+}
+
+// errCodeText renders an RSP_ERR code. There is no request/response correlation in the protocol, so
+// we can only say what was refused, not which command — still better than the previous behaviour of
+// dropping it and letting the UI show the change as applied.
+func errCodeText(code uint8) string {
+	switch code {
+	case proto.ErrUnknownCmd:
+		return "прошивка: неизвестная команда"
+	case proto.ErrBadID:
+		return "прошивка: неверный id параметра"
+	case proto.ErrBadLen:
+		return "прошивка: неверная длина команды"
+	}
+	return fmt.Sprintf("прошивка: ошибка %d", code)
 }
 
 func ledDot(gtx C, col color.NRGBA) D {

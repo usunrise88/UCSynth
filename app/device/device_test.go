@@ -66,6 +66,9 @@ func TestErroredOnConnClose(t *testing.T) {
 
 	d := New(c1, nil)
 	d.Start()
+	// Close even on the error path: leaving the device open leaks reader/writer/syncer for the rest
+	// of the package run, which both hides real leaks and races later tests.
+	defer d.Close()
 	waitFor(t, "Synced", func() bool { return d.Snapshot().State == Synced })
 
 	_ = c2.Close() // simulate unplug → device reader Read errors
