@@ -140,6 +140,23 @@ def main():
     PID_FA, PID_FD, PID_FS, PID_FR, PID_FENV, PID_FLOOP = 23, 24, 25, 26, 27, 28
     PID_LOFI, PID_LOFI_BITS = 29, 30
     PID_POLY, PID_GLIDE, PID_LEGATO = 31, 32, 33
+    # этап 4.1 — LFO×2, mod-wheel, 8 слотов матрицы (src, dst, depth подряд с шагом 3)
+    PID_LFO1_SHAPE, PID_LFO1_RATE, PID_LFO2_SHAPE, PID_LFO2_RATE = 34, 35, 36, 37
+    PID_MOD_WHEEL = 38
+    PID_MTX1_SRC = 39                     # слот n: PID_MTX1_SRC + (n-1)*3 + {0,1,2}
+    # ModSource: 0 нет, 1 LFO1, 2 LFO2, 3 VCF-огиб., 4 wave-огиб., 5 velocity, 6 mod-wheel, 7 ToF
+    # ModDest:   0 нет, 1 pitch, 2 cutoff, 3 res, 4 amp, 5 wave-поз.
+    SRC_LFO1, SRC_LFO2, SRC_WAVEENV, SRC_MODWHEEL = 1, 2, 4, 6
+    DST_PITCH, DST_CUTOFF, DST_AMP, DST_WAVEPOS = 1, 2, 4, 5
+    # этап 4.2 — wave-огибающая: 8 точек подряд + rate + loop
+    PID_WAVEENV_P1, PID_WAVEENV_RATE, PID_WAVEENV_LOOP = 63, 71, 72
+    # этап 5 — overdrive / delay / reverb
+    PID_OD_ON, PID_OD_DRIVE, PID_OD_MIX = 73, 74, 75
+    PID_DLY_ON, PID_DLY_TIME, PID_DLY_FB, PID_DLY_DAMP, PID_DLY_MIX = 76, 77, 78, 79, 80
+    PID_RV_ON, PID_RV_SIZE, PID_RV_DAMP, PID_RV_WIDTH, PID_RV_MIX = 81, 82, 83, 84, 85
+
+    def mtx(slot, field):                 # field: 0=src, 1=dst, 2=depth
+        return PID_MTX1_SRC + (slot - 1) * 3 + field
 
     def setp(pid, val):
         return encode(bytes([SET]) + struct.pack("<Hf", pid, val))
@@ -161,7 +178,7 @@ def main():
         drain(ser, dec, 0.2)
         time.sleep(0.6)
 
-    step("LIST (реестр — теперь 4 параметра, добавился test_tone)", encode(bytes([LIST])))
+    step("LIST (реестр — 86 параметров, см. PARAM_COUNT в control.h)", encode(bytes([LIST])))
     step("STAT", encode(bytes([STAT])))
 
     # Тест-тон по умолчанию ВКЛ — тон звучит с загрузки (проверка тракта). Гасим → играют ноты.
@@ -301,6 +318,92 @@ def main():
 
     step("glide_time = 0 (вернуть)", setp(PID_GLIDE, 0.0))
     step("poly_voices = 1 (вернуть моно)", setp(PID_POLY, 1.0))
+
+    step("SET waveform = 0 (sine)", setp(PID_WAVE, 0.0))
+
+    # --- этап 4.1: LFO + мод-матрица ---
+    print("\n=== 4.1 LFO x2 + мод-матрица ===")
+    step("saw", setp(PID_WAVE, 1.0))
+    step("cutoff 1200 (есть куда свипать)", setp(PID_CUTOFF, 1200.0))
+    step("LFO1: sine", setp(PID_LFO1_SHAPE, 0.0))
+    step("  rate 3 Гц", setp(PID_LFO1_RATE, 3.0))
+    step("слот 1: LFO1 -> cutoff", setp(mtx(1, 0), float(SRC_LFO1)))
+    step("  dst = cutoff", setp(mtx(1, 1), float(DST_CUTOFF)))
+    step("  depth 0.7", setp(mtx(1, 2), 0.7))
+    play("NOTE C4 (60) — слышен свип фильтра от LFO1", 60, hold=2.5)
+
+    step("LFO2: треугольник", setp(PID_LFO2_SHAPE, 1.0))
+    step("  rate 5 Гц", setp(PID_LFO2_RATE, 5.0))
+    step("слот 2: LFO2 -> pitch", setp(mtx(2, 0), float(SRC_LFO2)))
+    step("  dst = pitch", setp(mtx(2, 1), float(DST_PITCH)))
+    step("  depth 0.05 (~±1.2 полутона)", setp(mtx(2, 2), 0.05))
+    play("NOTE C4 (60) — вибрато от LFO2", 60, hold=2.5)
+
+    step("слот 3: mod-wheel -> amp", setp(mtx(3, 0), float(SRC_MODWHEEL)))
+    step("  dst = amp", setp(mtx(3, 1), float(DST_AMP)))
+    step("  depth -1", setp(mtx(3, 2), -1.0))
+    step("  mod_wheel = 1 -> амплитуда 0", setp(PID_MOD_WHEEL, 1.0))
+    play("NOTE C4 (60) — ТИШИНА (mod-wheel гасит amp)", 60, hold=1.2)
+    step("  mod_wheel = 0", setp(PID_MOD_WHEEL, 0.0))
+    play("NOTE C4 (60) — снова слышно", 60, hold=1.2)
+
+    print("матрицу в ноль:")
+    for sl in (1, 2, 3):
+        step("  слот %d off" % sl, setp(mtx(sl, 0), 0.0), pause=0.2)
+        step("  слот %d dst off" % sl, setp(mtx(sl, 1), 0.0), pause=0.2)
+        step("  слот %d depth 0" % sl, setp(mtx(sl, 2), 0.0), pause=0.2)
+    step("cutoff 20000 (вернуть)", setp(PID_CUTOFF, 20000.0))
+
+    # --- этап 4.2: wave-огибающая + морф ---
+    print("\n=== 4.2 wave-огибающая -> морф формы ===")
+    step("waveenv rate 1.5 с", setp(PID_WAVEENV_RATE, 1.5))
+    step("waveenv loop = 1", setp(PID_WAVEENV_LOOP, 1.0))
+    step("слот 1: wave-огиб. -> wave-поз.", setp(mtx(1, 0), float(SRC_WAVEENV)))
+    step("  dst = wave-поз.", setp(mtx(1, 1), float(DST_WAVEPOS)))
+    step("  depth 1", setp(mtx(1, 2), 1.0))
+    play("NOTE C3 (48) — форма плывёт sine->saw->square->tri", 48, hold=4.0)
+    step("слот 1 off", setp(mtx(1, 0), 0.0))
+    step("  dst off", setp(mtx(1, 1), 0.0))
+    step("  depth 0", setp(mtx(1, 2), 0.0))
+
+    # --- этап 5.1: overdrive ---
+    print("\n=== 5.1 overdrive ===")
+    step("saw", setp(PID_WAVE, 1.0))
+    play("NOTE C3 (48) — чисто (od off)", 48, hold=1.2)
+    step("od_on = 1", setp(PID_OD_ON, 1.0))
+    step("  drive 0.8", setp(PID_OD_DRIVE, 0.8))
+    step("  mix 1", setp(PID_OD_MIX, 1.0))
+    play("NOTE C3 (48) — с перегрузом", 48, hold=1.2)
+    step("od_on = 0", setp(PID_OD_ON, 0.0))
+
+    # --- этап 5.2: delay ---
+    print("\n=== 5.2 delay (стерео ping-pong, PSRAM) ===")
+    step("delay_on = 1", setp(PID_DLY_ON, 1.0))
+    step("  time 350 мс", setp(PID_DLY_TIME, 350.0))
+    step("  feedback 0.5", setp(PID_DLY_FB, 0.5))
+    step("  damp 0.3", setp(PID_DLY_DAMP, 0.3))
+    step("  mix 0.45", setp(PID_DLY_MIX, 0.45))
+    play("NOTE C4 (60) коротко — серия эхо, скачущая L<->R", 60, hold=0.2)
+    time.sleep(3.0)
+    step("delay_on = 0", setp(PID_DLY_ON, 0.0))
+    time.sleep(1.5)
+    step("delay_on = 1 снова — должна быть ТИШИНА (кольцо чистится, B-30)", setp(PID_DLY_ON, 1.0))
+    time.sleep(2.0)
+    step("delay_on = 0", setp(PID_DLY_ON, 0.0))
+
+    # --- этап 5.3: reverb ---
+    print("\n=== 5.3 reverb (Freeverb) ===")
+    step("reverb_on = 1", setp(PID_RV_ON, 1.0))
+    step("  size 0.7", setp(PID_RV_SIZE, 0.7))
+    step("  damp 0.5", setp(PID_RV_DAMP, 0.5))
+    step("  width 1", setp(PID_RV_WIDTH, 1.0))
+    step("  mix 0.35", setp(PID_RV_MIX, 0.35))
+    play("NOTE C4 (60) коротко — слышен хвост реверба", 60, hold=0.2)
+    time.sleep(3.0)
+    step("size 0.2 — уровень wet НЕ должен подскочить", setp(PID_RV_SIZE, 0.2))
+    play("NOTE C4 (60)", 60, hold=0.2)
+    time.sleep(2.0)
+    step("reverb_on = 0", setp(PID_RV_ON, 0.0))
 
     step("SET waveform = 0 (sine)", setp(PID_WAVE, 0.0))
     step("STAT (после всех демо — cpu/underruns)", encode(bytes([STAT])))
