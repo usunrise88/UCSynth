@@ -167,3 +167,18 @@ func TestSetBPMKeepsPosition(t *testing.T) {
 		t.Fatal("clock stopped advancing after SetBPM")
 	}
 }
+
+// advance() is deliberately testable without a clock (see the package doc), which means tests set
+// `playing` directly and leave stopCh nil. Stop() must survive that instead of panicking on
+// close(nil) — otherwise the object has a state in which its own public API crashes.
+func TestStopOnClocklessPlayerDoesNotPanic(t *testing.T) {
+	p := New(4, 60, 62, 120, func(int, bool) {}, nil)
+	p.Toggle(0, 60)
+	p.playing = true // exactly what TestAdvanceEmitsAndReleases does
+	p.advance()
+	p.Stop() // must not panic, and must release the sounding note
+	if p.Playing() {
+		t.Fatal("still playing after Stop")
+	}
+	p.Stop() // and again
+}

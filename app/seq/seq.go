@@ -156,7 +156,10 @@ func (p *Player) Stop() {
 		return
 	}
 	p.playing = false
-	close(p.stopCh)
+	if p.stopCh != nil { // nil when playing was set without Start (advance is unit-tested clockless)
+		close(p.stopCh)
+		p.stopCh = nil
+	}
 	offs := p.sounding
 	p.sounding = nil
 	p.cur = -1
