@@ -31,8 +31,15 @@ static void log_hw_info(void)
     esp_chip_info_t chip;
     esp_chip_info(&chip);
 
+    // Boot-лог — основной инструмент проверки железа в этом проекте (progress.md фиксирует
+    // «boot-лог показал flash 16 МБ» как критерий приёмки этапа 0.1). Молча напечатать 0 при
+    // провале опроса = выдать сбой API за аппаратный дефект.
     uint32_t flash_size = 0;
-    esp_flash_get_size(nullptr, &flash_size);
+    const esp_err_t flash_err = esp_flash_get_size(nullptr, &flash_size);
+    if (flash_err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_flash_get_size: %s — размер flash неизвестен (это не дефект платы)",
+                 esp_err_to_name(flash_err));
+    }
 
     ESP_LOGI(TAG, "chip ESP32-S3 rev %d, %d ядр(а), flash %lu МБ",
              chip.revision, chip.cores,
@@ -54,18 +61,59 @@ static void log_hw_info(void)
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
 }
 
+// Инициализация периферии, чьи задачи живут на Core 1 — выполняется САМА на Core 1.
+//
+// ESP-IDF выделяет прерывание периферии на том CPU, который вызвал esp_intr_alloc, а
+// usb_serial_jtag_driver_install и i2c_new_master_bus делают это внутри себя. app_main пиннут на
+// CPU0 (CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0), поэтому раньше задачи оказывались на Core 1 правильно,
+// а их ISR — на Core 0, ядре, отданном аудио. С подключённым OLED это ~600 входов ISR/с (1025 байт
+// на кадр через non-DMA I2C с 32-байтным FIFO, ~18 кадров/с) плюс каждый USB-пакет; каждый вход
+// вытесняет audio_task посреди блока, раздувая cpu_permille и s_late_blocks. Сейчас запас это
+// съедает, но на этапах 8–9 (MCP23017 INT + ST7796) это станет причиной дропов звука — и будет
+// выглядеть загадкой, потому что задачи-то на Core 1.
+//
+// i2s_new_channel в audio_init, наоборот, правильно зовётся с Core 0 — так и оставлено.
+static void core1_init_task(void *arg)
+{
+    (void)arg;
+    comm_init();     // протокол Serial / USB CDC     (этап 0.3)
+    io_init();       // периферия: I2C, энкодеры, тач (этап 8+)
+    display_init();  // отладочный OLED SSD1306       (вне спеки, до ST7796)
+    vTaskDelete(nullptr);
+}
+
+static void init_core1_peripherals(void)
+{
+    TaskHandle_t h = nullptr;
+    if (xTaskCreatePinnedToCore(core1_init_task, "init1", 4096, nullptr, 6, &h, 1) != pdPASS) {
+        ESP_LOGE(TAG, "не создать задачу init1 — периферия поднимается с Core 0 (ISR осядут там же)");
+        comm_init();
+        io_init();
+        display_init();
+        return;
+    }
+    // Ждём, пока периферия поднимется: дальше идёт heartbeat, и лог должен быть последовательным.
+    while (eTaskGetState(h) != eDeleted) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "UCSynth boot — этап 0 (каркас и протокол)");
     log_hw_info();
 
-    // Инициализация слоёв. Порядок: сначала модель параметров и связь (ими пользуются
-    // остальные), потом периферия, аудио — последним (оно начнёт читать параметры).
+    // Порядок: реестр параметров → аудио → периферия Core 1.
+    //
+    // audio_init ДО comm_init намеренно: comm_init сразу создаёт задачу, которая на первый же
+    // NOTE_ON зовёт audio_note_on и читает s_note_q. Раньше очередь создавалась позже (audio_init
+    // тратит ~1 с на wavetable_init и выделение реверба), так что существовало окно, в котором
+    // указатель читался между ядрами без синхронизации — NULL-гард делал это безвредным на
+    // практике, но это была гонка. Теперь очередь готова до появления читателя.
+
     control_init();  // реестр параметров            (этап 0.2)
-    comm_init();     // протокол Serial / USB CDC     (этап 0.3)
-    io_init();       // периферия: I2C, энкодеры, тач (этап 8+)
     audio_init();    // I2S + DMA + DSP на Core 0     (этап 1)
-    display_init();  // отладочный OLED SSD1306 на Core 1 (вне спеки, до ST7796)
+    init_core1_peripherals();
 
     ESP_LOGI(TAG, "boot complete");
 

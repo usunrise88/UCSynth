@@ -38,6 +38,11 @@ static constexpr gpio_num_t PIN_DIN = GPIO_NUM_7;   // data (S3 → модуль
 
 static i2s_chan_handle_t s_tx = nullptr;
 
+// Таймаут записи в I2S. Параметр i2s_channel_write — миллисекунды (внутри pdMS_TO_TICKS), поэтому
+// portMAX_DELAY туда передавать нельзя. Блок длится 1.33 мс; 200 мс — заведомо «никогда» в норме.
+static constexpr uint32_t I2S_WRITE_TIMEOUT_MS = 200;
+static uint32_t s_write_fails = 0;   // только аудио-задача (Core 0) — синхронизация не нужна
+
 // Состояние эффект-секции (этап 5). Кольцевые буферы delay — в PSRAM (аллокация в audio_init).
 static FxState s_fx = {};
 
@@ -227,8 +232,27 @@ static void audio_task(void *arg)
                              std::memory_order_relaxed);
         if (gen_us > BLOCK_US) s_late_blocks.fetch_add(1, std::memory_order_relaxed);
 
+        // Таймаут в МИЛЛИСЕКУНДАХ, не в тиках: внутри он идёт в pdMS_TO_TICKS, и portMAX_DELAY
+        // свернулся бы в ~11.9 часа, а не в бесконечность. Берём заведомо больше длительности
+        // блока, но конечное — чтобы отказ канала был виден, а не превратился в вечное ожидание.
+        //
+        // Возврат и written проверяем: i2s_channel_write крутит цикл, пока канал в состоянии
+        // RUNNING, и при выходе из него возвращается с ЧАСТИЧНОЙ записью. Без проверки задача
+        // провалилась бы сквозь write в генерацию следующего блока без точки блокировки —
+        // 100% Core 0, голодание IDLE0, TWDT каждые 5 с и ни строчки в логе о причине.
         size_t written = 0;
-        i2s_channel_write(s_tx, block, sizeof(block), &written, portMAX_DELAY);
+        const esp_err_t werr = i2s_channel_write(s_tx, block, sizeof(block), &written,
+                                                 I2S_WRITE_TIMEOUT_MS);
+        if (werr != ESP_OK || written != sizeof(block)) {
+            ++s_write_fails;
+            if (s_write_fails <= 3 || (s_write_fails % 1000) == 0) {   // не заливаем лог
+                ESP_LOGE(TAG, "i2s_channel_write: %s, записано %u из %u (сбоев: %lu)",
+                         esp_err_to_name(werr), (unsigned)written, (unsigned)sizeof(block),
+                         (unsigned long)s_write_fails);
+            }
+            // Отдаём процессор, чтобы при постоянном отказе канала задача не съела Core 0 целиком.
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
     }
 }
 
@@ -344,11 +368,21 @@ void audio_init(void)
     }
 
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).
+    // Проверяем NULL: audio_task зовёт xQueueReceive безусловно, и на NULL это configASSERT внутри
+    // FreeRTOS — цикл ребутов с бэктрейсом, указывающим куда угодно, кроме провалившегося
+    // выделения. Внутренняя DRAM тут уже плотная: реверб забрал ~110 КБ выше.
     s_note_q = xQueueCreate(32, sizeof(NoteEvent));
+    if (!s_note_q) {
+        ESP_LOGE(TAG, "не выделить нотную очередь — аудио-задача не запущена, звука не будет");
+        return;
+    }
 
     // 3) Аудио-задача на Core 0 (Core 1 отдан comm/UI). Приоритет выше comm(5): звук важнее.
     //    Стек 6 КБ: SynthParams + float-буферы на стеке (пул голосов — статический, не тут).
-    xTaskCreatePinnedToCore(audio_task, "audio", 6144, nullptr, 10, nullptr, 0);
+    if (xTaskCreatePinnedToCore(audio_task, "audio", 6144, nullptr, 10, nullptr, 0) != pdPASS) {
+        ESP_LOGE(TAG, "не создать аудио-задачу — звука не будет");
+        return;
+    }
 
     ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — полифония 3.5/3.6 (до 8 голосов + glide)",
              (unsigned)SAMPLE_RATE, (int)PIN_BCK, (int)PIN_WS, (int)PIN_DIN);

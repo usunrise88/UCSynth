@@ -113,6 +113,30 @@ int main() {
         CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_UNKNOWN_CMD, "unknown -> ERR_UNKNOWN_CMD");
     }
 
+    // --- id ↔ строка реестра ---
+    // В control.cpp это проверяется static_assert'ом (params_in_order), но сдвиг таблицы — самый
+    // дорогой из возможных здесь дефектов: GUI и патчи строятся по LIST, поэтому чужие min/max
+    // молча уводят DSP за диапазон. Дублируем несколько якорей рантаймом, чтобы проверка выжила,
+    // даже если static_assert когда-нибудь снесут.
+    {
+        struct { uint16_t id; const char *name; } anchors[] = {
+            { PARAM_MASTER_VOLUME, "master_volume" },
+            { PARAM_TEST_TONE,     "test_tone"     },
+            { PARAM_CUTOFF,        "cutoff"        },
+            { PARAM_POLY_VOICES,   "poly_voices"   },
+            { PARAM_MTX1_SRC,      "mtx1_src"      },
+            { PARAM_MTX8_DEPTH,    "mtx8_depth"    },
+            { PARAM_WAVEENV_P1,    "waveenv_p1"    },
+            { PARAM_REVERB_MIX,    "reverb_mix"    },
+        };
+        for (const auto &a : anchors) {
+            param_info_t info{};
+            const bool ok = param_get_info(a.id, &info);
+            CHECK(ok && info.name && std::strcmp(info.name, a.name) == 0, a.name);
+        }
+        CHECK(param_count() == PARAM_COUNT, "param_count() == PARAM_COUNT");
+    }
+
     // --- NaN/Inf с провода не должны попадать в параметр ---
     // set_param — единственные ворота в DSP, а в них приходит произвольное 32-битное слово.
     // Прямой кламп (v < min / v > max) пропускает NaN: оба сравнения для него ложны. NaN в
