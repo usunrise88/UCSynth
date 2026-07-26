@@ -18,7 +18,7 @@ func EncodeFrame(body []byte) []byte {
 	if n > MaxBody {
 		panic("proto: body length out of range")
 	}
-	head := make([]byte, 0, 1+n)      // LEN + BODY (what the CRC covers)
+	head := make([]byte, 0, 1+n) // LEN + BODY (what the CRC covers)
 	head = append(head, byte(n))
 	head = append(head, body...)
 	crc := CRC16(head)

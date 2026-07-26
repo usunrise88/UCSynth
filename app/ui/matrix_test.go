@@ -23,10 +23,10 @@ func TestParseMtxSlot(t *testing.T) {
 		{"mtx1_src", 1, "src"},
 		{"mtx8_depth", 8, "depth"},
 		{"mtx3_dst", 3, "dst"},
-		{"mod_wheel", 0, ""},   // not a slot
-		{"lfo1_rate", 0, ""},   // "mtx" prefix absent
-		{"mtx", 0, ""},         // no "_"
-		{"mtxX_src", 0, ""},    // non-numeric slot
+		{"mod_wheel", 0, ""}, // not a slot
+		{"lfo1_rate", 0, ""}, // "mtx" prefix absent
+		{"mtx", 0, ""},       // no "_"
+		{"mtxX_src", 0, ""},  // non-numeric slot
 		{"master_volume", 0, ""},
 	}
 	for _, c := range cases {
@@ -59,7 +59,7 @@ func TestEnumCycleNext(t *testing.T) {
 		return d
 	}
 
-	d := render() // establish input areas
+	d := render()                  // establish input areas
 	x, y := d.Size.X-6, d.Size.Y/2 // "›" is the rightmost element
 	r.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: f32.Pt(float32(x), float32(y)), PointerID: 1})
 	r.Queue(pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: f32.Pt(float32(x), float32(y)), PointerID: 1})

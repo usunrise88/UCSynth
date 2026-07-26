@@ -69,6 +69,7 @@ const (
 	statPollMs  = 500                   // STAT poll cadence (~2 Hz)
 	closeGrace  = 30 * time.Millisecond // let the writer flush NOTE_OFFs before teardown
 	noteOffWait = 50 * time.Millisecond // how long a NOTE_OFF waits for queue room (see NoteOff)
+	closeWait   = 1 * time.Second       // cap on waiting for the goroutines in Close
 
 )
 
@@ -245,13 +246,24 @@ func (d *Device) Snapshot() Snapshot {
 	}
 }
 
-// Close flushes held notes, stops the goroutines and closes the connection.
+// Close flushes held notes, stops the goroutines and closes the connection. It waits for the
+// goroutines but only up to closeWait: a serial handle with an outstanding overlapped read does not
+// always return from Read when closed, and hanging forever here would freeze the caller. Callers on
+// a UI thread should still not call this inline — see ui.disconnect.
 func (d *Device) Close() error {
 	d.AllNotesOff()
 	time.Sleep(closeGrace) // give the priority writer a moment to emit the NOTE_OFFs
 	d.stop(Disconnected, nil)
 	err := d.conn.Close() // unblocks the reader's Read
-	d.wg.Wait()
+
+	done := make(chan struct{})
+	go func() { d.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(closeWait):
+		// Goroutines are parked in a Read that never returned. They hold only the dead connection,
+		// so leaking them is strictly better than never returning from Close.
+	}
 	return err
 }
 

@@ -37,9 +37,10 @@ func (c *Controller) matrixPanel(gtx C, cs []*control) D {
 	type slot struct{ src, dst, depth *control }
 	var slots [9]slot // 1..8
 	var knobs []*control
+	var extra []*control // anything this panel's name pattern doesn't recognise
 	for _, ct := range cs {
 		n, kind := parseMtxSlot(ct.p.Name)
-		if n >= 1 && n <= 8 {
+		if n >= 1 && n <= 8 && (kind == "src" || kind == "dst" || kind == "depth") {
 			switch kind {
 			case "src":
 				slots[n].src = ct
@@ -52,7 +53,15 @@ func (c *Controller) matrixPanel(gtx C, cs []*control) D {
 		}
 		if ct.kind == kindKnob { // mod-wheel (manual source)
 			knobs = append(knobs, ct)
+			continue
 		}
+		// This is the one block with a hand-written renderer, so it is also the one place where a
+		// new firmware parameter could vanish from the UI entirely — while still being saved and
+		// loaded by patches, which walk the snapshot rather than the UI. That is the invariant
+		// unlistedBlocks/layout.For→misc and TestUnlistedBlocksCatchAll exist to protect, so
+		// anything unrecognised (a 9th+ slot, a new enum in this block) falls through to the
+		// generic renderer instead of being dropped.
+		extra = append(extra, ct)
 	}
 
 	var rows []layout.FlexChild
@@ -70,10 +79,20 @@ func (c *Controller) matrixPanel(gtx C, cs []*control) D {
 	for i := 1; i <= 8; i++ {
 		s := slots[i]
 		if s.src == nil || s.dst == nil || s.depth == nil {
+			// An incomplete slot still has real parameters behind it — render them generically
+			// rather than dropping them.
+			for _, ct := range []*control{s.src, s.dst, s.depth} {
+				if ct != nil {
+					extra = append(extra, ct)
+				}
+			}
 			continue
 		}
 		i, s := i, s
 		add(func(gtx C) D { return c.matrixRow(gtx, i, s.src, s.dst, s.depth) })
+	}
+	if len(extra) > 0 {
+		add(func(gtx C) D { return c.cellRow(gtx, extra, false) })
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
 }
@@ -98,7 +117,7 @@ func (c *Controller) matrixRow(gtx C, n int, src, dst, depth *control) D {
 // enumCycle renders an enum as «‹ label ›» with bidirectional wrap-around cycling. Reuses the
 // control's dec/inc clickables (unused for enums otherwise). NONE (index 0) shows muted.
 func (c *control) enumCycle(gtx C, th *material.Theme, set setFunc) D {
-	cur := int(c.p.Cur + 0.5)
+	cur := int(c.value() + 0.5) // optimistic: D-014 expects several clicks in a row through 8 sources
 	n := int(c.p.Max-c.p.Min) + 1
 	if n < 1 {
 		n = 1
@@ -106,10 +125,12 @@ func (c *control) enumCycle(gtx C, th *material.Theme, set setFunc) D {
 	if c.dec.Clicked(gtx) { // read before Layout (Clickable.Layout drains clicks)
 		cur = (cur - 1 + n) % n
 		set(c.p.ID, float32(cur))
+		c.commit(float32(cur))
 	}
 	if c.inc.Clicked(gtx) {
 		cur = (cur + 1) % n
 		set(c.p.ID, float32(cur))
+		c.commit(float32(cur))
 	}
 	caret := func(b *widget.Clickable, s string) layout.Widget {
 		return func(gtx C) D {
@@ -140,15 +161,18 @@ func (c *control) depthCell(gtx C, th *material.Theme, set setFunc) D {
 	if !c.knob.Dragging() && span != 0 {
 		c.knob.Value = clamp01((c.p.Cur - min) / span)
 	}
-	live := min + c.knob.Value*span
+	shown := min + c.knob.Value*span // pre-layout value, for the caption (one frame behind, cosmetic)
 	dims := fixedW(gtx, gtx.Dp(50), func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
 			layout.Rigid(c.knob.Layout),
-			layout.Rigid(label(th, unit.Sp(10), fmtVal(live, ""), colTxt).Layout),
+			layout.Rigid(label(th, unit.Sp(10), fmtVal(shown, ""), colTxt).Layout),
 		)
 	})
+	// Recompute AFTER the layout: c.knob.Layout is what processes the pointer events and updates
+	// knob.Value, so sending the pre-layout value drops the drag delta that triggered Changed() —
+	// a quick flick within one frame changed nothing at all. knobCell/sliderCell already do this.
 	if c.knob.Changed() {
-		set(c.p.ID, live)
+		set(c.p.ID, min+c.knob.Value*span)
 	}
 	return dims
 }

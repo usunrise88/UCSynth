@@ -111,6 +111,12 @@ func (c *Controller) rollGrid(gtx C) D {
 		cellH = gtx.Dp(9)
 	}
 	H := cellH * rows
+	// Never report more than we were given. cellH is clamped from below so the grid stays usable in
+	// a short window, which means cellH*rows can exceed availH — and a Flexed child that returns an
+	// oversized height pushes the outer Flex's Rigid children (the MIDI footer) off their place.
+	if H > availH {
+		H = availH
+	}
 	c.rollGeom = rollGeom{x0: gutter, cellW: cellW, cellH: cellH, steps: steps, hi: c.player.Hi()}
 
 	area := clip.Rect{Max: image.Pt(W, H)}.Push(gtx.Ops)

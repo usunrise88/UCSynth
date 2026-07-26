@@ -43,7 +43,35 @@ type control struct {
 	seg  []widget.Clickable
 	dec  widget.Clickable // int −
 	inc  widget.Clickable // int +
+
+	// Optimistic local value: what we last sent but have not yet seen echoed back.
+	//
+	// Steppers, toggles and enum carets compute the next value from the current one, and p.Cur only
+	// updates when the device echoes VALUE — after the SET flush (≤25 ms at 40 Hz) plus a USB round
+	// trip. Two clicks inside that window both read the same stale p.Cur, compute the same target,
+	// and the SET coalescer (latest-per-id) then merges them into one: four rapid clicks on
+	// poly_voices moved it by one. Holding the value we sent makes each click step from the last.
+	opt      float32
+	optBase  float32 // p.Cur at the moment we sent opt — how we detect the device answered
+	optValid bool
 }
+
+// value is the value to compute the next step from: our unconfirmed local edit if we have one,
+// otherwise the device's echo. Once p.Cur moves off optBase the device has spoken (with our value or
+// a clamped one) and it wins.
+func (c *control) value() float32 {
+	if c.optValid {
+		if c.p.Cur != c.optBase {
+			c.optValid = false
+			return c.p.Cur
+		}
+		return c.opt
+	}
+	return c.p.Cur
+}
+
+// commit records a value we just sent so the next click steps from it rather than from a stale echo.
+func (c *control) commit(v float32) { c.opt, c.optBase, c.optValid = v, c.p.Cur, true }
 
 func newControl(p proto.Param) *control {
 	c := &control{p: p, fld: blk.For(p.Name)}
@@ -113,10 +141,11 @@ func (c *control) sliderCell(gtx C, th *material.Theme, set setFunc) D {
 }
 
 func (c *control) segField(gtx C, th *material.Theme, set setFunc) D {
-	cur := int(c.p.Cur + 0.5)
+	cur := int(c.value() + 0.5)
 	for i := range c.seg { // read clicks before drawing (Clickable.Layout drains them)
 		if c.seg[i].Clicked(gtx) {
 			set(c.p.ID, float32(i))
+			c.commit(float32(i))
 			cur = i
 		}
 	}
@@ -140,10 +169,11 @@ func (c *control) segField(gtx C, th *material.Theme, set setFunc) D {
 }
 
 func (c *control) toggleCell(gtx C, th *material.Theme, set setFunc) D {
-	on := c.p.Cur > 0.5
+	on := c.value() > 0.5
 	if c.tog.Clicked(gtx) {
 		on = !on
 		set(c.p.ID, boolf(on))
+		c.commit(boolf(on))
 	}
 	return c.tog.Layout(gtx, func(gtx C) D {
 		return togPill(on).draw(gtx, th, c.fld.Label)
@@ -151,15 +181,17 @@ func (c *control) toggleCell(gtx C, th *material.Theme, set setFunc) D {
 }
 
 func (c *control) stepperCell(gtx C, th *material.Theme, set setFunc) D {
-	cur := int(c.p.Cur + 0.5)
+	cur := int(c.value() + 0.5)
 	lo, hi := int(c.p.Min+0.5), int(c.p.Max+0.5)
 	if c.dec.Clicked(gtx) && cur > lo {
 		cur--
 		set(c.p.ID, float32(cur))
+		c.commit(float32(cur))
 	}
 	if c.inc.Clicked(gtx) && cur < hi {
 		cur++
 		set(c.p.ID, float32(cur))
+		c.commit(float32(cur))
 	}
 	step := func(b *widget.Clickable, s string) layout.Widget {
 		return func(gtx C) D {

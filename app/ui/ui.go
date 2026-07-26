@@ -227,7 +227,7 @@ func (c *Controller) Shutdown() {
 		c.midiIn.Close()
 		c.midiIn = nil
 	}
-	c.disconnect()
+	c.disconnectWait(true) // window is closing — flush NOTE_OFFs before the process exits
 }
 
 func (c *Controller) enumPorts() {
@@ -266,15 +266,28 @@ func (c *Controller) connect() {
 	c.status = ""
 }
 
-func (c *Controller) disconnect() {
+// disconnect tears the connection down. wait=false hands Close to a goroutine: it sleeps 30 ms for
+// the writer to flush NOTE_OFFs and then waits on goroutines that may be parked in a Read which a
+// wedged USB driver never returns from — doing that inline freezes the frame, and this runs from
+// handleButtons inside Layout. wait=true is for window close, where flushing before the process
+// exits matters more than a brief stall.
+func (c *Controller) disconnect() { c.disconnectWait(false) }
+
+func (c *Controller) disconnectWait(wait bool) {
 	if c.player != nil {
 		c.player.Stop()
 	}
 	if c.dev != nil {
-		c.kb.AllOff()
+		c.kb.AllOff()       // release screen-keyboard notes while the sink still points at the device
+		c.sink.midiAllOff() // ...and MIDI-held ones
 		c.sink.set(nil)
-		c.dev.Close()
+		dev := c.dev
 		c.dev = nil
+		if wait {
+			_ = dev.Close()
+		} else {
+			go func() { _ = dev.Close() }()
+		}
 	}
 	c.controls = nil
 	c.builtN = -1
@@ -413,6 +426,11 @@ func (c *Controller) handleButtons(gtx C) {
 }
 
 func (c *Controller) setTab(t int) {
+	if t != c.tab && c.tab == tabSynth {
+		// The keyboard is only laid out on the synth tab, so leaving it means no Release event will
+		// ever reach a held key — release everything now or the note drones until Panic.
+		c.kb.AllOff()
+	}
 	c.tab = t
 	if t == tabPatches {
 		c.refreshPatches()
@@ -720,7 +738,15 @@ func (c *Controller) layoutToneBanner(gtx C, snap device.Snapshot) D {
 	if c.dev == nil {
 		return D{}
 	}
-	p, ok := snap.Param(mustID(snap, "test_tone"))
+	// Resolve by name and honour the "not found" answer. mustID used to collapse "absent" into id 0,
+	// and id 0 is master_volume — whose default 0.8 is above this banner's threshold. So a firmware
+	// without test_tone (or one whose test_tone PARAM frame was lost) showed a permanent "тест-тон
+	// включён" while the off button, which resolves the id correctly, did nothing.
+	id, found := paramID(snap, "test_tone")
+	if !found {
+		return D{}
+	}
+	p, ok := snap.Param(id)
 	if !ok || p.Cur <= 0.5 {
 		return D{}
 	}
@@ -776,7 +802,5 @@ func paramID(snap device.Snapshot, name string) (uint16, bool) {
 	return 0, false
 }
 
-func mustID(snap device.Snapshot, name string) uint16 {
-	id, _ := paramID(snap, name)
-	return id
-}
+// (mustID removed: "absent" and "id 0" are not distinguishable, and id 0 is master_volume — see
+// layoutToneBanner. Use paramID and handle the bool.)
