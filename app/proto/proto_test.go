@@ -72,6 +72,48 @@ func TestDecoderResyncAfterLog(t *testing.T) {
 	}
 }
 
+// The log line above contains no 0x55, so it never exercises resync at all. A false sync does:
+// nothing may be lost after one, in either feeding order.
+func TestDecoderResyncAfterFalseSync(t *testing.T) {
+	d := NewDecoder()
+	d.Push([]byte{'x', Sync0, Sync1}) // false sync with no frame behind it
+
+	got := 0
+	for rep := 0; rep < 20; rep++ {
+		got += len(d.Push(StatFrame()))
+	}
+	if got != 20 {
+		t.Fatalf("decoded %d of 20 frames after a false sync", got)
+	}
+}
+
+// A false sync must not withhold a frame that has already fully arrived behind it. Left unhandled
+// this is a head-of-line stall: the ready frame waits for bytes that may never come.
+func TestDecoderNoHeadOfLineStall(t *testing.T) {
+	d := NewDecoder()
+	// One push: false sync, then a complete GET frame. The false sync's LEN byte is whatever the
+	// real frame starts with, so it declares a length we do not have.
+	in := append([]byte{Sync0, Sync1}, GetFrame(5)...)
+	bodies := d.Push(in)
+	if len(bodies) != 1 {
+		t.Fatalf("decoded %d frames, want the GET frame delivered immediately", len(bodies))
+	}
+	if Opcode(bodies[0]) != CmdGet {
+		t.Fatalf("wrong frame recovered: %v", bodies[0])
+	}
+}
+
+// LEN=0 is legal on the wire (the firmware emits and accepts it), so the encoder must not panic on
+// an empty body — code that round-trips a received body through the encoder would crash.
+func TestEncodeEmptyBody(t *testing.T) {
+	f := EncodeFrame(nil)
+	d := NewDecoder()
+	bodies := d.Push(f)
+	if len(bodies) != 1 || len(bodies[0]) != 0 {
+		t.Fatalf("empty body did not round-trip: %v", bodies)
+	}
+}
+
 // A bad CRC frame is dropped; a following good frame still decodes.
 func TestDecoderBadCRC(t *testing.T) {
 	bad := StatFrame()

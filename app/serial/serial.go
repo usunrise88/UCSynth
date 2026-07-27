@@ -7,6 +7,7 @@ package serial
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"go.bug.st/serial"
 	"go.bug.st/serial/enumerator"
@@ -49,16 +50,49 @@ func List() ([]PortInfo, error) {
 // Conn is an open serial connection usable as device's io.ReadWriteCloser.
 type Conn struct{ port serial.Port }
 
-// Open opens a port (baud is irrelevant for USB-Serial-JTAG) and holds DTR/RTS low to avoid
-// rebooting the board on connect. Drain the boot log briefly before sending LIST.
+const (
+	// settleDelay is how long we let the port go quiet before purging it. Anything already in the
+	// OS receive buffer at open time — a boot log, half a frame from a killed previous session,
+	// output from a concurrently running serialtest.py — would otherwise be fed to the frame
+	// decoder as the first bytes of this session and eat the head of the LIST response.
+	settleDelay = 200 * time.Millisecond
+	// readTimeout keeps Read from blocking forever on a half-open port, so a hung link is
+	// distinguishable from an idle one. Timeouts surface as a 0-byte, nil-error read.
+	readTimeout = 2 * time.Second
+)
+
+// Open opens a port (baud is irrelevant for USB-Serial-JTAG), holds DTR/RTS low so connecting does
+// not reset the board, and drains whatever was already buffered before the caller sends LIST.
 func Open(name string) (*Conn, error) {
-	port, err := serial.Open(name, &serial.Mode{BaudRate: 115200})
+	// InitialStatusBits must be set explicitly: nil means "DTR=true and RTS=true" and the Windows
+	// backend applies that inside SetCommState at open time. Calling SetDTR(false) afterwards is too
+	// late — the lines have already gone high, and that high→low pulse is exactly what esptool uses
+	// to reboot the chip. Setting them here means they are never raised in the first place.
+	port, err := serial.Open(name, &serial.Mode{
+		BaudRate:          115200,
+		InitialStatusBits: &serial.ModemOutputBits{DTR: false, RTS: false},
+	})
 	if err != nil {
 		return nil, err
 	}
-	// Hold reset lines low: opening the port must not reset the S3 (see serialtest.py rts=False).
-	_ = port.SetDTR(false)
-	_ = port.SetRTS(false)
+	if err := port.SetDTR(false); err != nil {
+		_ = port.Close()
+		return nil, fmt.Errorf("не удалось опустить DTR (порт сбросил бы плату): %w", err)
+	}
+	if err := port.SetRTS(false); err != nil {
+		_ = port.Close()
+		return nil, fmt.Errorf("не удалось опустить RTS (порт сбросил бы плату): %w", err)
+	}
+	if err := port.SetReadTimeout(readTimeout); err != nil {
+		_ = port.Close()
+		return nil, err
+	}
+
+	time.Sleep(settleDelay)
+	if err := port.ResetInputBuffer(); err != nil {
+		_ = port.Close()
+		return nil, err
+	}
 	return &Conn{port: port}, nil
 }
 

@@ -149,3 +149,12 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT13"
 
 "$OUT13"
+
+# Тест numfmt (формат значений в OLED-попапе: знак, округление, перенос).
+OUT14="$(mktemp -d)/numfmttest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/display/src" \
+    "$ROOT/test/host/test_numfmt.cpp" \
+    -o "$OUT14"
+
+"$OUT14"

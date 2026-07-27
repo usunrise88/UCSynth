@@ -19,6 +19,7 @@ void fx_delay_init(FxState *fx, float *buf_l, float *buf_r, int len)
     fx->dl_len = len;
     fx->dl_wr = 0;
     fx->dl_lp_l = fx->dl_lp_r = 0.0f;
+    fx->dl_was_on = false;
     if (buf_l && buf_r) {
         for (int i = 0; i < len; ++i) { buf_l[i] = 0.0f; buf_r[i] = 0.0f; }
     }
@@ -26,7 +27,20 @@ void fx_delay_init(FxState *fx, float *buf_l, float *buf_r, int len)
 
 void AUDIO_HOT fx_delay(FxState *fx, const FxParams *p, float *l, float *r, int n, float sr)
 {
-    if (!p->delay_on || fx->dl_l == nullptr || fx->dl_r == nullptr) return;   // off/нет буфера → dry
+    if (fx->dl_l == nullptr || fx->dl_r == nullptr) return;                   // нет буфера → dry
+    if (!p->delay_on) { fx->dl_was_on = false; return; }                      // off → dry
+
+    // Фронт off→on: очистить кольцо. Пока эффект выключен, мы не пишем в буфер и не двигаем dl_wr,
+    // так что при включении чтение продолжилось бы с той же позиции — ровно через delay_time на
+    // ПОЛНОЙ амплитуде звучал бы материал, записанный до выключения. Проверено: выключить на 5 с,
+    // включить → «призрачное» эхо пятисекундной давности, пик 1.0. Пользователь при этом мог сменить
+    // патч и играть совсем другое.
+    if (!fx->dl_was_on) {
+        for (int i = 0; i < fx->dl_len; ++i) { fx->dl_l[i] = 0.0f; fx->dl_r[i] = 0.0f; }
+        fx->dl_lp_l = fx->dl_lp_r = 0.0f;
+        fx->dl_wr   = 0;
+        fx->dl_was_on = true;
+    }
 
     const int len = fx->dl_len;
     int d = (int)(p->delay_time * 0.001f * sr);          // мс → сэмплы; ЕДИНОЕ время обоих каналов
@@ -108,6 +122,7 @@ void fx_reverb_init(FxState *fx, float *buf, int nsamples)
 {
     for (int i = 0; i < RV_NCOMB; ++i) { fx->rv_combL[i] = {nullptr, 0, 0, 0.0f}; fx->rv_combR[i] = {nullptr, 0, 0, 0.0f}; }
     for (int i = 0; i < RV_NAP; ++i)   { fx->rv_apL[i]   = {nullptr, 0, 0};       fx->rv_apR[i]   = {nullptr, 0, 0}; }
+    fx->rv_was_on = false;
     if (!buf || nsamples < fx_reverb_bufsize()) return;   // нет/мал буфер → реверб отключён
 
     for (int i = 0; i < nsamples; ++i) buf[i] = 0.0f;
@@ -125,7 +140,23 @@ void fx_reverb_init(FxState *fx, float *buf, int nsamples)
 
 void AUDIO_HOT fx_reverb(FxState *fx, const FxParams *p, float *l, float *r, int n)
 {
-    if (!p->reverb_on || fx->rv_combL[0].buf == nullptr) return;   // off/нет буфера → dry
+    if (fx->rv_combL[0].buf == nullptr) return;                    // нет буфера → dry
+    if (!p->reverb_on) { fx->rv_was_on = false; return; }           // off → dry
+
+    // Фронт off→on: очистить линии — тот же механизм, что у delay. Хвост реверба затухает сам, но
+    // при включении он всё равно начинается с чужого материала, а не с тишины.
+    if (!fx->rv_was_on) {
+        for (int k = 0; k < RV_NCOMB; ++k) {
+            for (int i = 0; i < fx->rv_combL[k].len; ++i) fx->rv_combL[k].buf[i] = 0.0f;
+            for (int i = 0; i < fx->rv_combR[k].len; ++i) fx->rv_combR[k].buf[i] = 0.0f;
+            fx->rv_combL[k].store = fx->rv_combR[k].store = 0.0f;
+        }
+        for (int k = 0; k < RV_NAP; ++k) {
+            for (int i = 0; i < fx->rv_apL[k].len; ++i) fx->rv_apL[k].buf[i] = 0.0f;
+            for (int i = 0; i < fx->rv_apR[k].len; ++i) fx->rv_apR[k].buf[i] = 0.0f;
+        }
+        fx->rv_was_on = true;
+    }
 
     const float fb     = p->reverb_size * RV_ROOM_SCALE + RV_ROOM_OFFSET;
     const float damp   = p->reverb_damp * RV_DAMP_SCALE;

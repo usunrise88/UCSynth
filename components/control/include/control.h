@@ -74,7 +74,7 @@ typedef enum {
     PARAM_MOD_WHEEL     = 38, // mod-wheel как источник матрицы, 0..1
     // Мод-матрица: 8 слотов, каждый {src, dst, depth} — СТРОГО подряд в этом порядке
     // (audio.cpp читает как PARAM_MTX1_SRC + slot*3 + {0,1,2}). src: enum ModSource 0..7,
-    // dst: enum ModDest 0..6, depth: -1..1.
+    // dst: enum ModDest 0..5, depth: -1..1.
     PARAM_MTX1_SRC      = 39,
     PARAM_MTX1_DST      = 40,
     PARAM_MTX1_DEPTH    = 41,

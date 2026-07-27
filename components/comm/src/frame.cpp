@@ -34,64 +34,84 @@ size_t frame_encode(const uint8_t *body, size_t body_len, uint8_t *out, size_t o
     return total;
 }
 
-// Состояния декодера.
-enum { S_SYNC0 = 0, S_SYNC1, S_LEN, S_BODY, S_CRC_LO, S_CRC_HI };
-
 void frame_decoder_init(frame_decoder_t *d)
 {
-    memset(d, 0, sizeof(*d));
-    d->state = S_SYNC0;
+    d->n = 0;
+}
+
+// Позиция первого синка в buf[from..n), либо -1.
+static int index_sync(const uint8_t *b, int n, int from)
+{
+    for (int i = from; i + 1 < n; ++i) {
+        if (b[i] == FRAME_SYNC0 && b[i + 1] == FRAME_SYNC1) return i;
+    }
+    return -1;
+}
+
+// Попытка собрать кадр, начинающийся в buf[off]. Возврат: полная длина кадра при валидном CRC,
+// 0 при несошедшемся CRC, -1 если байт ещё не хватает.
+static int try_frame_at(const frame_decoder_t *d, int off, uint8_t *len_out)
+{
+    if (d->n - off < 3) return -1;                       // нужны sync(2)+LEN
+    const uint8_t len  = d->buf[off + 2];
+    const int     need = 3 + (int)len + 2;
+    if (d->n - off < need) return -1;
+    // CRC считается по (LEN + BODY), а они лежат в буфере подряд — копия не нужна.
+    const uint16_t calc = frame_crc16(d->buf + off + 2, 1u + (size_t)len);
+    const uint16_t rx   = (uint16_t)d->buf[off + 3 + len] |
+                          ((uint16_t)d->buf[off + 4 + len] << 8);
+    if (calc != rx) return 0;
+    *len_out = len;
+    return need;
+}
+
+// Выбросить k байт с начала накопителя.
+static void drop(frame_decoder_t *d, int k)
+{
+    if (k >= d->n) { d->n = 0; return; }
+    memmove(d->buf, d->buf + k, (size_t)(d->n - k));
+    d->n -= k;
 }
 
 bool frame_decoder_push(frame_decoder_t *d, uint8_t byte,
                         const uint8_t **body_out, size_t *body_len_out)
 {
-    switch (d->state) {
-    case S_SYNC0:
-        if (byte == FRAME_SYNC0) d->state = S_SYNC1;
-        break;
+    if (d->n >= (int)sizeof(d->buf)) {
+        drop(d, 2);   // защита: буфер полон, а кадр не собрался → там мусор, гарантируем прогресс
+    }
+    d->buf[d->n++] = byte;
 
-    case S_SYNC1:
-        if (byte == FRAME_SYNC1)      d->state = S_LEN;
-        else if (byte == FRAME_SYNC0) d->state = S_SYNC1;  // 0x55 0x55… — держим синк
-        else                          d->state = S_SYNC0;
-        break;
+    for (;;) {
+        const int i = index_sync(d->buf, d->n, 0);
+        if (i < 0) {
+            // Целого синка нет. Держим только возможный его первый байт, остальное — мусор/лог.
+            if (d->n > 1) drop(d, d->n - 1);
+            if (d->n == 1 && d->buf[0] != FRAME_SYNC0) d->n = 0;
+            break;
+        }
+        if (i > 0) drop(d, i);                           // отбросить лог/мусор перед синком
 
-    case S_LEN:
-        d->len = byte;
-        d->idx = 0;
-        d->state = (byte == 0) ? S_CRC_LO : S_BODY;  // пустое тело допустимо (CRC решит)
-        break;
-
-    case S_BODY:
-        d->body[d->idx++] = byte;
-        if (d->idx >= d->len) d->state = S_CRC_LO;
-        break;
-
-    case S_CRC_LO:
-        d->crc0 = byte;
-        d->state = S_CRC_HI;
-        break;
-
-    case S_CRC_HI: {
-        const uint16_t rx = (uint16_t)d->crc0 | ((uint16_t)byte << 8);
-        // CRC по (LEN + BODY) — собираем цельным буфером: [len][body...].
-        uint8_t tmp[1 + FRAME_MAX_BODY];
-        tmp[0] = d->len;
-        memcpy(tmp + 1, d->body, d->len);
-        const uint16_t calc = frame_crc16(tmp, 1 + d->len);
-        d->state = S_SYNC0;
-        if (calc == rx) {
-            *body_out = d->body;
-            *body_len_out = d->len;
+        uint8_t len = 0;
+        const int r = try_frame_at(d, 0, &len);
+        if (r > 0) {
+            memcpy(d->body, d->buf + 3, len);
+            drop(d, r);
+            *body_out     = d->body;
+            *body_len_out = len;
             return true;
         }
-        break;  // CRC не сошёлся — молча ресинхронизируемся
-    }
+        if (r == 0) { drop(d, 2); continue; }             // ложный синк → рескан со сдвигом 2
 
-    default:
-        d->state = S_SYNC0;
-        break;
+        // Кадру не хватает байт. Но если ДАЛЬШЕ в буфере уже лежит целый кадр с сошедшимся CRC,
+        // то текущий синк ложный и ждать его нечего: иначе готовый кадр висит до прихода байт,
+        // которых может и не быть (head-of-line stall — при затихшем потоке это навсегда).
+        int adv = -1;
+        for (int j = index_sync(d->buf, d->n, 1); j > 0; j = index_sync(d->buf, d->n, j + 1)) {
+            uint8_t l2 = 0;
+            if (try_frame_at(d, j, &l2) > 0) { adv = j; break; }
+        }
+        if (adv > 0) { drop(d, adv); continue; }
+        break;                                            // действительно ждём продолжения
     }
     return false;
 }

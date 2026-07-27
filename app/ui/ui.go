@@ -25,6 +25,7 @@ import (
 	blk "ucsynth/app/layout"
 	"ucsynth/app/midi"
 	"ucsynth/app/patch"
+	"ucsynth/app/proto"
 	"ucsynth/app/seq"
 	"ucsynth/app/serial"
 )
@@ -105,8 +106,9 @@ type Controller struct {
 // emit notes while the UI goroutine connects/disconnects. The device's own note methods are already
 // thread-safe; only the pointer swap needs protection.
 type noteSink struct {
-	mu  sync.Mutex
-	dev *device.Device
+	mu   sync.Mutex
+	dev  *device.Device
+	midi map[uint8]bool // ноты, зажатые по MIDI-входу — их некому снять, кроме нас (см. midiAllOff)
 }
 
 func (n *noteSink) set(d *device.Device) { n.mu.Lock(); n.dev = d; n.mu.Unlock() }
@@ -125,6 +127,50 @@ func (n *noteSink) off(note uint8) {
 	d := n.dev
 	n.mu.Unlock()
 	if d != nil {
+		d.NoteOff(note)
+	}
+}
+
+// midiOn/midiOff — вход с внешней MIDI-клавиатуры. В отличие от экранной клавиатуры (k.mouse/k.kbd)
+// и секвенсора (p.sounding) у MIDI-нот нет своего владельца: если закрыть транспорт с зажатой
+// клавишей, Release физически некуда прийти. Поэтому держим набор здесь.
+func (n *noteSink) midiOn(note, vel uint8) {
+	n.mu.Lock()
+	d := n.dev
+	if n.midi == nil {
+		n.midi = map[uint8]bool{}
+	}
+	n.midi[note] = true
+	n.mu.Unlock()
+	if d != nil {
+		d.NoteOn(note, vel)
+	}
+}
+
+func (n *noteSink) midiOff(note uint8) {
+	n.mu.Lock()
+	d := n.dev
+	delete(n.midi, note)
+	n.mu.Unlock()
+	if d != nil {
+		d.NoteOff(note)
+	}
+}
+
+// midiAllOff снимает все ноты, зажатые по MIDI. Звать перед закрытием/переключением MIDI-входа.
+func (n *noteSink) midiAllOff() {
+	n.mu.Lock()
+	d := n.dev
+	notes := make([]uint8, 0, len(n.midi))
+	for note := range n.midi {
+		notes = append(notes, note)
+	}
+	n.midi = map[uint8]bool{}
+	n.mu.Unlock()
+	if d == nil {
+		return
+	}
+	for _, note := range notes {
 		d.NoteOff(note)
 	}
 }
@@ -177,10 +223,11 @@ func (c *Controller) Shutdown() {
 		c.player.Stop()
 	}
 	if c.midiIn != nil {
+		c.sink.midiAllOff()
 		c.midiIn.Close()
 		c.midiIn = nil
 	}
-	c.disconnect()
+	c.disconnectWait(true) // window is closing — flush NOTE_OFFs before the process exits
 }
 
 func (c *Controller) enumPorts() {
@@ -219,15 +266,28 @@ func (c *Controller) connect() {
 	c.status = ""
 }
 
-func (c *Controller) disconnect() {
+// disconnect tears the connection down. wait=false hands Close to a goroutine: it sleeps 30 ms for
+// the writer to flush NOTE_OFFs and then waits on goroutines that may be parked in a Read which a
+// wedged USB driver never returns from — doing that inline freezes the frame, and this runs from
+// handleButtons inside Layout. wait=true is for window close, where flushing before the process
+// exits matters more than a brief stall.
+func (c *Controller) disconnect() { c.disconnectWait(false) }
+
+func (c *Controller) disconnectWait(wait bool) {
 	if c.player != nil {
 		c.player.Stop()
 	}
 	if c.dev != nil {
-		c.kb.AllOff()
+		c.kb.AllOff()       // release screen-keyboard notes while the sink still points at the device
+		c.sink.midiAllOff() // ...and MIDI-held ones
 		c.sink.set(nil)
-		c.dev.Close()
+		dev := c.dev
 		c.dev = nil
+		if wait {
+			_ = dev.Close()
+		} else {
+			go func() { _ = dev.Close() }()
+		}
 	}
 	c.controls = nil
 	c.builtN = -1
@@ -366,6 +426,11 @@ func (c *Controller) handleButtons(gtx C) {
 }
 
 func (c *Controller) setTab(t int) {
+	if t != c.tab && c.tab == tabSynth {
+		// The keyboard is only laid out on the synth tab, so leaving it means no Release event will
+		// ever reach a held key — release everything now or the note drones until Panic.
+		c.kb.AllOff()
+	}
 	c.tab = t
 	if t == tabPatches {
 		c.refreshPatches()
@@ -463,6 +528,21 @@ func (c *Controller) statusDot(gtx C, snap device.Snapshot) D {
 		default:
 			col, txt = colErr, snap.State.String()
 		}
+		// Everything below is a failure the firmware or the link reported and that used to be
+		// invisible: a short registry (a knob silently missing), a rejected command, or a board that
+		// stopped answering with the port still open.
+		if snap.Missing > 0 {
+			col = colWarn
+			txt += fmt.Sprintf("  ·  не пришло параметров: %d", snap.Missing)
+		}
+		if snap.Stale {
+			col = colErr
+			txt += "  ·  плата не отвечает"
+		}
+		if snap.LastErr != 0 {
+			col = colWarn
+			txt += "  ·  " + errCodeText(snap.LastErr)
+		}
 		if snap.Err != nil {
 			txt = snap.State.String() + ": " + snap.Err.Error()
 		}
@@ -472,6 +552,21 @@ func (c *Controller) statusDot(gtx C, snap device.Snapshot) D {
 		layout.Rigid(layout.Spacer{Width: unit.Dp(7)}.Layout),
 		layout.Rigid(label(c.th, unit.Sp(12.5), txt, colMuted).Layout),
 	)
+}
+
+// errCodeText renders an RSP_ERR code. There is no request/response correlation in the protocol, so
+// we can only say what was refused, not which command — still better than the previous behaviour of
+// dropping it and letting the UI show the change as applied.
+func errCodeText(code uint8) string {
+	switch code {
+	case proto.ErrUnknownCmd:
+		return "прошивка: неизвестная команда"
+	case proto.ErrBadID:
+		return "прошивка: неверный id параметра"
+	case proto.ErrBadLen:
+		return "прошивка: неверная длина команды"
+	}
+	return fmt.Sprintf("прошивка: ошибка %d", code)
 }
 
 func ledDot(gtx C, col color.NRGBA) D {
@@ -643,7 +738,15 @@ func (c *Controller) layoutToneBanner(gtx C, snap device.Snapshot) D {
 	if c.dev == nil {
 		return D{}
 	}
-	p, ok := snap.Param(mustID(snap, "test_tone"))
+	// Resolve by name and honour the "not found" answer. mustID used to collapse "absent" into id 0,
+	// and id 0 is master_volume — whose default 0.8 is above this banner's threshold. So a firmware
+	// without test_tone (or one whose test_tone PARAM frame was lost) showed a permanent "тест-тон
+	// включён" while the off button, which resolves the id correctly, did nothing.
+	id, found := paramID(snap, "test_tone")
+	if !found {
+		return D{}
+	}
+	p, ok := snap.Param(id)
 	if !ok || p.Cur <= 0.5 {
 		return D{}
 	}
@@ -699,7 +802,5 @@ func paramID(snap device.Snapshot, name string) (uint16, bool) {
 	return 0, false
 }
 
-func mustID(snap device.Snapshot, name string) uint16 {
-	id, _ := paramID(snap, name)
-	return id
-}
+// (mustID removed: "absent" and "id 0" are not distinguishable, and id 0 is master_volume — see
+// layoutToneBanner. Use paramID and handle the bool.)

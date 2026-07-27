@@ -152,19 +152,29 @@ void synth_note_off(const SynthParams *sp, uint8_t note)
         if (s_voices[i].note == note && s_voices[i].key_down) voice_note_off(&s_voices[i], note);
 }
 
-void AUDIO_HOT synth_render(const SynthParams *sp, float sr, float *out, int n)
+void synth_set_poly(int poly)
 {
-    int poly = sp->poly_voices < 1 ? 1 : (sp->poly_voices > SYNTH_MAX_VOICES ? SYNTH_MAX_VOICES : sp->poly_voices);
+    poly = poly < 1 ? 1 : (poly > SYNTH_MAX_VOICES ? SYNTH_MAX_VOICES : poly);
     if (poly != s_prev_poly) {                          // смена режима polyphony на лету → сброс нот
-        if (s_prev_poly >= 0) all_notes_off();          // но не на первом рендере (сентинел -1)
+        if (s_prev_poly >= 0) all_notes_off();          // но не на первом вызове (сентинел -1)
         s_prev_poly = poly;
     }
+}
+
+void AUDIO_HOT synth_render(const SynthParams *sp, float sr, float *out, int n)
+{
+    (void)sp;   // poly-режим ставится синхронно через synth_set_poly (ДО дренажа нотной очереди)
 
     for (int k = 0; k < n; ++k) out[k] = 0.0f;
 
     float tmp[SYNTH_MAX_BLOCK];
     if (n > SYNTH_MAX_BLOCK) n = SYNTH_MAX_BLOCK;      // страховка (аудио-блок ≤ 128)
-    for (int i = 0; i < poly; ++i) {                   // только активные голоса (CPU ~ числу нот)
+    // Рендерим ВСЕ слоты пула, а не первые poly: после уменьшения polyphony голоса выше нового
+    // предела должны дотикать релиз до ENV_IDLE. Иначе их огибающие не двигаются никогда — голос
+    // висит «активным» вечно, врёт synth_active_count() и ломает round-robin поиск свободного.
+    // Аллокация (alloc_voice/nearest_sounding) по-прежнему смотрит только i < poly, так что
+    // переиспользованы они не будут. CPU не растёт: неактивные слоты пропускаются.
+    for (int i = 0; i < SYNTH_MAX_VOICES; ++i) {       // только активные голоса (CPU ~ числу нот)
         if (!active(&s_voices[i])) continue;
         voice_render(&s_voices[i], &sp->voice, sr, tmp, n);
         for (int k = 0; k < n; ++k) out[k] += tmp[k];

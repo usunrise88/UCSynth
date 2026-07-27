@@ -61,8 +61,8 @@ func ListFrame() []byte { return EncodeFrame([]byte{CmdList}) }
 
 func StatFrame() []byte { return EncodeFrame([]byte{CmdStat}) }
 
-func NoteOnFrame(note, vel uint8) []byte  { return EncodeFrame([]byte{CmdNoteOn, note, vel}) }
-func NoteOffFrame(note uint8) []byte      { return EncodeFrame([]byte{CmdNoteOff, note}) }
+func NoteOnFrame(note, vel uint8) []byte { return EncodeFrame([]byte{CmdNoteOn, note, vel}) }
+func NoteOffFrame(note uint8) []byte     { return EncodeFrame([]byte{CmdNoteOff, note}) }
 
 // --- response types ---
 
@@ -72,10 +72,10 @@ type Value struct {
 }
 
 type Param struct {
-	ID              uint16
-	Type            uint8
+	ID                 uint16
+	Type               uint8
 	Min, Max, Def, Cur float32
-	Name            string
+	Name               string
 }
 
 type ListEnd struct{ Count uint16 }
@@ -190,5 +190,5 @@ func StatRespFrame(s Stat) []byte {
 	return EncodeFrame(b)
 }
 
-func AckFrame() []byte         { return EncodeFrame([]byte{RspAck}) }
+func AckFrame() []byte               { return EncodeFrame([]byte{RspAck}) }
 func ErrRespFrame(code uint8) []byte { return EncodeFrame([]byte{RspErr, code}) }

@@ -13,6 +13,21 @@ static void check(bool ok, const char *what)
 }
 static bool approx(float a, float b, float eps) { return std::fabs(a - b) <= eps; }
 
+// Величина k-й гармоники на ЗАДАННОМ mip. Отдельно от harmonic_mag: там N жёстко привязан к длине
+// таблицы mip 0, а нам нужно сравнивать уровень основного тона между mip.
+static double harmonic_mag_mip(uint8_t w, int k, int mip)
+{
+    const int N = 4096;                      // с запасом: короткие таблицы читаются с интерполяцией
+    double re = 0.0, im = 0.0;
+    for (int n = 0; n < N; ++n) {
+        const double x = (double)n / (double)N;
+        const double v = wavetable_sample(w, (float)x, mip);
+        re += v * std::cos(2.0 * PI * k * x);
+        im -= v * std::sin(2.0 * PI * k * x);
+    }
+    return 2.0 * std::sqrt(re * re + im * im) / (double)N;
+}
+
 // Величина k-й гармоники таблицы: проецируем один период (снятый в узлах mip 0, L=2048 → без
 // ошибки интерполяции) на sin/cos. mip 0 несёт до 600 гармоник — на нём и проверяем спектр.
 static double harmonic_mag(uint8_t w, int k)
@@ -63,6 +78,40 @@ int main()
                 if (v < -1.001f || v > 1.001f) { check(false, "range [-1,1]"); w = mip = k = 99999; }
             }
         }
+    }
+
+    // --- Уровень основного тона согласован между mip (B-12) ---
+    // Каждая таблица нормировалась на СВОЙ пик, а на верхних mip остаётся 1–4 гармоники: пик
+    // усечённого ряда отличается от полного, поэтому нормировка съезжала по основному тону. Замер
+    // до правки (SAW): mip 0 → 0.553, mip 7 → 0.684 (+1.85 дБ), mip 9/10 → 0.950 (+4.69 дБ).
+    // Границы mip лежат на 1280/2560/5120/10240 Гц — то есть глайд пилой C6→C7 давал ступеньку
+    // посреди скольжения, а pitch-LFO через границу — паразитную AM на частоте LFO.
+    for (int w = 0; w < WAVE_COUNT; ++w) {
+        const double ref = harmonic_mag_mip((uint8_t)w, 1, 0);
+        check(ref > 0.05, "нормировка: основной тон mip 0 не нулевой");
+        for (int mip = 1; mip < 11; ++mip) {
+            const double a  = harmonic_mag_mip((uint8_t)w, 1, mip);
+            const double db = 20.0 * std::log10(a / ref);
+            if (db < -1.0 || db > 1.0) {
+                printf("FAIL: форма %d mip %d: основной тон %+.2f дБ против mip 0\n", w, mip, db);
+                g_fail++;
+            }
+        }
+    }
+
+    // Гарантия [-1,1] должна сохраняться и после общей нормировки: у меандра верхние mip имеют пик
+    // ВЫШЕ полного спектра (одна гармоника = 4/π от плато против выброса Гиббса ≈1.09), поэтому
+    // делить всю форму на пик mip 0 нельзя — только на максимум среди её mip.
+    for (int w = 0; w < WAVE_COUNT; ++w) {
+        float mx = 0.0f;
+        for (int mip = 0; mip < 11; ++mip) {
+            for (int k = 0; k < 8192; ++k) {
+                const float v = std::fabs(wavetable_sample((uint8_t)w, (float)k / 8192.0f, mip));
+                if (v > mx) mx = v;
+            }
+        }
+        check(mx <= 1.001f, "нормировка: пик формы по всем mip ≤ 1");
+        check(mx > 0.9f,    "нормировка: пик формы не занижен (запас не съеден)");
     }
 
     // --- Band-limit: на mip 0 гармоники есть в полосе (1..600) и отсутствуют выше (700) ---

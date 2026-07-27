@@ -18,7 +18,9 @@ int main()
     float l[64], r[64];
 
     // --- пинг-понг: моно-импульс → ЛЕВОЕ эхо на delay_time, ПРАВОЕ на 2·delay_time (скачок), затухание ---
-    FxState fx;
+    // FxState обязательно с {}: поля реверба тут не инициализируются, и добавление в этот тест
+    // вызова fx_reverb дало бы разыменование мусорного указателя (в test_reverb.cpp так и сделано).
+    FxState fx{};
     fx_delay_init(&fx, bl, br, len);
     FxParams p{};
     p.delay_on = true; p.delay_time = 10.0f; p.delay_feedback = 0.5f; p.delay_damp = 0.0f; p.delay_mix = 1.0f;
@@ -97,6 +99,42 @@ int main()
         }
         check(fin, "устойчивость: без NaN/inf");
         check(mx < 10.0f, "устойчивость: выход ограничен при feedback 0.95");
+    }
+
+    // --- фронт off→on чистит кольцо: «призрачное» эхо старого материала недопустимо ---
+    // Пока эффект выключен, буфер не пишется и dl_wr не двигается, поэтому при включении чтение
+    // продолжилось бы с прежней позиции — ровно через delay_time на ПОЛНОЙ амплитуде звучал бы
+    // материал, записанный до выключения (замер до правки: пик 1.0 через 0.5 с).
+    {
+        FxState f2{};
+        fx_delay_init(&f2, bl, br, len);
+        FxParams q{};
+        q.delay_on = true; q.delay_time = 10.0f; q.delay_feedback = 0.0f; q.delay_damp = 0.0f; q.delay_mix = 1.0f;
+        const int dd = (int)(q.delay_time * 0.001f * sr);
+
+        // 1) записать громкий материал при включённом эффекте
+        for (int gi = 0; gi < dd * 2; gi += N) {
+            for (int i = 0; i < N; ++i) { l[i] = 1.0f; r[i] = 1.0f; }
+            fx_delay(&f2, &q, l, r, N, sr);
+        }
+        // 2) выключить и «поиграть другое» на тишине заметно дольше delay_time
+        q.delay_on = false;
+        for (int gi = 0; gi < dd * 6; gi += N) {
+            for (int i = 0; i < N; ++i) { l[i] = 0.0f; r[i] = 0.0f; }
+            fx_delay(&f2, &q, l, r, N, sr);
+        }
+        // 3) включить на тишине — wet обязан быть тишиной, а не хвостом из шага 1
+        q.delay_on = true;
+        float ghost = 0.0f;
+        for (int gi = 0; gi < dd * 3; gi += N) {
+            for (int i = 0; i < N; ++i) { l[i] = 0.0f; r[i] = 0.0f; }
+            fx_delay(&f2, &q, l, r, N, sr);
+            for (int i = 0; i < N; ++i) {
+                if (std::fabs(l[i]) > ghost) ghost = std::fabs(l[i]);
+                if (std::fabs(r[i]) > ghost) ghost = std::fabs(r[i]);
+            }
+        }
+        check(ghost < 1e-6f, "off→on: кольцо очищено (нет призрачного эха)");
     }
 
     free(bl); free(br); free(outL); free(outR);

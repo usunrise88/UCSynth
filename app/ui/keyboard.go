@@ -87,14 +87,19 @@ func (k *Keyboard) noteOff(note int, src map[int]bool) {
 func (k *Keyboard) OctaveDown() { k.shift(-12) }
 func (k *Keyboard) OctaveUp()   { k.shift(12) }
 
+// maxTypingSemi is the highest offset the FL layout reaches ("P" = base+28). The clamp has to bound
+// the highest *reachable* note, not the base: bounding the base at 108 still let "P" emit 136, which
+// note_to_hz turns into ~21 kHz — the key lights up and nothing is audible.
+const maxTypingSemi = 28
+
 func (k *Keyboard) shift(d int) {
 	k.AllOff()
 	k.base += d
 	if k.base < 12 {
 		k.base = 12
 	}
-	if k.base > 108 {
-		k.base = 108
+	if max := 127 - maxTypingSemi; k.base > max {
+		k.base = max
 	}
 }
 
@@ -166,12 +171,14 @@ func (k *Keyboard) piano(gtx C) D {
 	area := clip.Rect{Max: image.Pt(kbW, h)}.Push(gtx.Ops)
 	k.handleKeys(gtx)
 
+	drawn := make(map[int]bool, 12*k.octaves)
 	fillRRect(gtx.Ops, image.Rect(0, 0, kbW, h), gtx.Dp(6), colKeyFace)
 	for o := 0; o < k.octaves; o++ {
 		for wi, semi := range whiteSemis {
 			note := k.base + o*12 + semi
 			x := (o*7 + wi) * ww
 			k.drawKey(gtx, note, x+1, 0, ww-2, h, rad, k.whiteColor(note))
+			drawn[note] = true
 		}
 	}
 	for o := 0; o < k.octaves; o++ {
@@ -183,15 +190,34 @@ func (k *Keyboard) piano(gtx C) D {
 			note := k.base + o*12 + semi
 			x := (o*7+wi)*ww + ww - bw/2
 			k.drawKey(gtx, note, x, 0, bw, bh, rad, k.blackColor(note))
+			drawn[note] = true
 		}
 	}
 	area.Pop()
 
-	for note, clk := range k.keys {
-		if clk.Pressed() {
+	// Poll ONLY the keys laid out this frame. A widget.Clickable updates `pressed` inside Layout, so
+	// a key that stopped being laid out while the mouse was down (octave shift) keeps Pressed()==true
+	// forever: Gio drops its tag from the router, and the Release/Cancel never reaches it. Polling the
+	// whole retained map therefore re-sent NOTE_ON every single frame — a note that survived both
+	// releasing the mouse and pressing Panic.
+	for note := range drawn {
+		if k.keyOf(note).Pressed() {
 			k.noteOn(note, k.mouse)
 		} else {
 			k.noteOff(note, k.mouse)
+		}
+	}
+	// Any note we still believe is mouse-held but did not draw this frame can never be released by
+	// its widget — release it here.
+	for note := range k.mouse {
+		if !drawn[note] {
+			k.noteOff(note, k.mouse)
+		}
+	}
+	// Drop stale widgets so the map does not grow without bound as the user moves the octave.
+	for note := range k.keys {
+		if !drawn[note] {
+			delete(k.keys, note)
 		}
 	}
 	return D{Size: image.Pt(kbW, h)}
@@ -250,9 +276,19 @@ func (k *Keyboard) handleKeys(gtx C) {
 		if !ok {
 			break
 		}
+		if fe, ok := ev.(key.FocusEvent); ok {
+			// Losing focus is the ONLY signal that a key.Release will never arrive: it fires when
+			// the window goes to the background or another widget takes focus. Without acting on it,
+			// a note held while Alt-Tabbing keeps sounding forever — and the dedup in noteOn then
+			// swallows the next press of that key, so it also looks "dead" on return.
+			if !fe.Focus {
+				k.AllOff()
+			}
+			continue
+		}
 		ke, ok := ev.(key.Event)
 		if !ok {
-			continue // e.g. key.FocusEvent from the FocusFilter
+			continue
 		}
 		switch ke.Name {
 		case key.NameUpArrow:

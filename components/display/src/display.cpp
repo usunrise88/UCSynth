@@ -5,6 +5,7 @@
 #include "display.h"
 #include "ssd1306.h"
 #include "gfx.h"
+#include "numfmt.h"
 #include "control.h"
 #include "audio.h"
 
@@ -16,6 +17,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 
 static const char *TAG = "display";
 
@@ -88,10 +90,7 @@ static void draw_popup(uint8_t *fb, uint16_t pid)
         const int idx = (int)(info.cur + 0.5f);
         snprintf(val, sizeof(val), "%s", kWave[(idx < 0 || idx > 3) ? 0 : idx]);
     } else if (info.type == PARAM_TYPE_FLOAT) {
-        const int whole = (int)info.cur;
-        int frac = (int)((info.cur - (float)whole) * 100.0f + 0.5f);
-        if (frac < 0) frac = -frac;
-        snprintf(val, sizeof(val), "%d.%02d", whole, frac);
+        fmt_float_2dp(val, sizeof(val), info.cur);   // знак отдельно от модуля — см. numfmt.h
     } else {
         snprintf(val, sizeof(val), "%d", (int)(info.cur + 0.5f));
     }
@@ -162,10 +161,19 @@ void display_init(void)
     }
     if (!ssd1306_init(bus, OLED_ADDR)) {
         ESP_LOGW(TAG, "OLED не найден на 0x%02X — дисплей выкл (звук работает)", OLED_ADDR);
+        // Шину обязательно отдать. Работа без OLED — поддерживаемая конфигурация, а брошенный
+        // хэндл держит I2C_NUM_0 занятым: на этапах 8/10 io.cpp получит ESP_ERR_INVALID_STATE
+        // («i2c port 0 has been used») для шины, которой никто не пользуется, и это будет выглядеть
+        // как «датчики не отвечают».
+        i2c_del_master_bus(bus);
         return;   // дисплей опционален
     }
 
-    xTaskCreatePinnedToCore(display_task, "display", 4096, nullptr, 3, nullptr, 1);
+    if (xTaskCreatePinnedToCore(display_task, "display", 4096, nullptr, 3, nullptr, 1) != pdPASS) {
+        ESP_LOGE(TAG, "не создать задачу display — OLED выкл (звук работает)");
+        i2c_del_master_bus(bus);
+        return;
+    }
     ESP_LOGI(TAG, "OLED SSD1306 128x64 @ 0x%02X, SDA=%d SCL=%d, задача на Core 1",
              OLED_ADDR, (int)PIN_SDA, (int)PIN_SCL);
 }

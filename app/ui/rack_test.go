@@ -95,3 +95,43 @@ func TestControllerLayoutSmoke(t *testing.T) {
 		r.Frame(gtx.Ops)
 	}
 }
+
+// The mod-matrix is the one block with a hand-written renderer, so it is also the one place a new
+// firmware parameter can vanish from the UI while patches keep saving and loading it (they walk the
+// snapshot, not the UI). Anything the slot-name pattern doesn't recognise must still be rendered.
+func TestMatrixPanelRendersUnrecognisedParams(t *testing.T) {
+	c := New(func() {})
+	cs := []*control{
+		newControl(proto.Param{ID: 1, Name: "mtx1_src", Type: proto.TypeEnum, Min: 0, Max: 7, Cur: 0}),
+		newControl(proto.Param{ID: 2, Name: "mtx1_dst", Type: proto.TypeEnum, Min: 0, Max: 5, Cur: 0}),
+		newControl(proto.Param{ID: 3, Name: "mtx1_depth", Type: proto.TypeFloat, Min: -1, Max: 1, Cur: 0}),
+		// A 9th slot and a brand-new enum: neither fits the [1..8]×{src,dst,depth} pattern.
+		newControl(proto.Param{ID: 4, Name: "mtx9_src", Type: proto.TypeEnum, Min: 0, Max: 7, Cur: 0}),
+		newControl(proto.Param{ID: 5, Name: "mod_wheel_curve", Type: proto.TypeEnum, Min: 0, Max: 2, Cur: 0}),
+		// An incomplete slot (dst/depth missing) — its src is still a real parameter.
+		newControl(proto.Param{ID: 6, Name: "mtx4_src", Type: proto.TypeEnum, Min: 0, Max: 7, Cur: 0}),
+	}
+
+	var r input.Router
+	gtx := layout.Context{Ops: new(op.Ops), Metric: testMetric, Source: r.Source()}
+	render := func() D {
+		gtx.Reset()
+		gtx.Metric = testMetric
+		// Loose constraints so the vertical Flex sizes to its content and the height is meaningful.
+		gtx.Constraints = layout.Constraints{Max: image.Pt(420, 4000)}
+		d := c.matrixPanel(gtx, cs)
+		r.Frame(gtx.Ops)
+		return d
+	}
+	full := render()
+	render()
+
+	// Now drop the unrecognised ones: the panel must get measurably shorter, proving they were
+	// actually laid out rather than silently skipped.
+	cs = cs[:3]
+	trimmed := render()
+	if full.Size.Y <= trimmed.Size.Y {
+		t.Fatalf("unrecognised matrix params were not rendered: height with them %d, without %d",
+			full.Size.Y, trimmed.Size.Y)
+	}
+}

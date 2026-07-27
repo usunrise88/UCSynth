@@ -113,6 +113,56 @@ int main() {
         CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_UNKNOWN_CMD, "unknown -> ERR_UNKNOWN_CMD");
     }
 
+    // --- id ↔ строка реестра ---
+    // В control.cpp это проверяется static_assert'ом (params_in_order), но сдвиг таблицы — самый
+    // дорогой из возможных здесь дефектов: GUI и патчи строятся по LIST, поэтому чужие min/max
+    // молча уводят DSP за диапазон. Дублируем несколько якорей рантаймом, чтобы проверка выжила,
+    // даже если static_assert когда-нибудь снесут.
+    {
+        struct { uint16_t id; const char *name; } anchors[] = {
+            { PARAM_MASTER_VOLUME, "master_volume" },
+            { PARAM_TEST_TONE,     "test_tone"     },
+            { PARAM_CUTOFF,        "cutoff"        },
+            { PARAM_POLY_VOICES,   "poly_voices"   },
+            { PARAM_MTX1_SRC,      "mtx1_src"      },
+            { PARAM_MTX8_DEPTH,    "mtx8_depth"    },
+            { PARAM_WAVEENV_P1,    "waveenv_p1"    },
+            { PARAM_REVERB_MIX,    "reverb_mix"    },
+        };
+        for (const auto &a : anchors) {
+            param_info_t info{};
+            const bool ok = param_get_info(a.id, &info);
+            CHECK(ok && info.name && std::strcmp(info.name, a.name) == 0, a.name);
+        }
+        CHECK(param_count() == PARAM_COUNT, "param_count() == PARAM_COUNT");
+    }
+
+    // --- NaN/Inf с провода не должны попадать в параметр ---
+    // set_param — единственные ворота в DSP, а в них приходит произвольное 32-битное слово.
+    // Прямой кламп (v < min / v > max) пропускает NaN: оба сравнения для него ложны. NaN в
+    // g_values отравляет тракт и рециркулирует в кольцах delay/reverb через feedback — выход
+    // остаётся мусором даже после записи корректного значения, до перезагрузки.
+    {
+        const float before = get_param(PARAM_CUTOFF);
+        int nan_b[4]; f32_bytes(std::nanf(""), nan_b);
+        run({ CMD_SET, PARAM_CUTOFF & 0xFF, (PARAM_CUTOFF >> 8) & 0xFF,
+              nan_b[0], nan_b[1], nan_b[2], nan_b[3] });
+        const float after = get_param(PARAM_CUTOFF);
+        CHECK(std::isfinite(after), "SET NaN → параметр остался конечным");
+
+        int inf_b[4]; f32_bytes(INFINITY, inf_b);
+        run({ CMD_SET, PARAM_CUTOFF & 0xFF, (PARAM_CUTOFF >> 8) & 0xFF,
+              inf_b[0], inf_b[1], inf_b[2], inf_b[3] });
+        CHECK(std::isfinite(get_param(PARAM_CUTOFF)), "SET +Inf → параметр остался конечным");
+
+        int neg_b[4]; f32_bytes(-INFINITY, neg_b);
+        run({ CMD_SET, PARAM_CUTOFF & 0xFF, (PARAM_CUTOFF >> 8) & 0xFF,
+              neg_b[0], neg_b[1], neg_b[2], neg_b[3] });
+        CHECK(std::isfinite(get_param(PARAM_CUTOFF)), "SET -Inf → параметр остался конечным");
+
+        set_param(PARAM_CUTOFF, before);   // вернуть как было для остальных проверок
+    }
+
     // --- CRC совпадает со стандартным check value CRC-16/CCITT-FALSE ---
     // Гарантирует, что прошивка и GUI/скрипт считают CRC одинаково (иначе связь не сойдётся).
     CHECK(frame_crc16(reinterpret_cast<const uint8_t *>("123456789"), 9) == 0x29B1,
@@ -153,6 +203,43 @@ int main() {
         for (const char *c = log; *c; ++c) frame_decoder_push(&d, (uint8_t)*c, &out, &outlen);
         for (size_t i = 0; i < n; ++i) if (frame_decoder_push(&d, frame[i], &out, &outlen)) got = true;
         CHECK(got && out && out[0] == CMD_STAT, "кадр после ASCII-лога распознан");
+    }
+
+    // --- ресинхронизация после ЛОЖНОГО синка ---
+    // Прежняя версия этой проверки кормила декодер строкой "I (123) audio: init\n", в которой нет
+    // байта 0x55 — автомат не покидал S_SYNC0, и весь механизм ресинка оставался непроверенным.
+    // Ложный синк — совсем другое дело: старый байтовый декодер брал следующий байт за LEN и
+    // необратимо съедал LEN+2 байта, уничтожая настоящие кадры внутри этого окна.
+    {
+        const uint8_t body[] = { CMD_STAT };
+        uint8_t frame[FRAME_MAX_SIZE];
+        const size_t n = frame_encode(body, sizeof(body), frame, sizeof(frame));
+
+        frame_decoder_t d; frame_decoder_init(&d);
+        const uint8_t *out = nullptr; size_t outlen = 0;
+        const uint8_t junk[] = { 'x', FRAME_SYNC0, FRAME_SYNC1 };   // ложный синк без кадра за ним
+        for (uint8_t b : junk) frame_decoder_push(&d, b, &out, &outlen);
+
+        int decoded = 0;
+        for (int rep = 0; rep < 20; ++rep)
+            for (size_t i = 0; i < n; ++i)
+                if (frame_decoder_push(&d, frame[i], &out, &outlen)) ++decoded;
+        CHECK(decoded == 20, "после ложного синка ни один из 20 кадров не потерян");
+    }
+
+    // Ложный синк, объявивший огромную длину, не должен задерживать уже пришедший целый кадр
+    // (head-of-line stall): если дальше в буфере лежит кадр с сошедшимся CRC, синк был ложный.
+    {
+        const uint8_t body[] = { CMD_GET, 0x05, 0x00 };
+        uint8_t frame[FRAME_MAX_SIZE];
+        const size_t n = frame_encode(body, sizeof(body), frame, sizeof(frame));
+
+        frame_decoder_t d; frame_decoder_init(&d);
+        const uint8_t *out = nullptr; size_t outlen = 0; bool got = false;
+        frame_decoder_push(&d, FRAME_SYNC0, &out, &outlen);
+        frame_decoder_push(&d, FRAME_SYNC1, &out, &outlen);   // LEN возьмётся из тела кадра ниже
+        for (size_t i = 0; i < n; ++i) if (frame_decoder_push(&d, frame[i], &out, &outlen)) got = true;
+        CHECK(got && out && out[0] == CMD_GET, "ложный синк не задерживает готовый кадр");
     }
 
     if (g_fail == 0) { std::printf("OK: все проверки пройдены\n"); return 0; }

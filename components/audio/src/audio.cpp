@@ -38,6 +38,11 @@ static constexpr gpio_num_t PIN_DIN = GPIO_NUM_7;   // data (S3 → модуль
 
 static i2s_chan_handle_t s_tx = nullptr;
 
+// Таймаут записи в I2S. Параметр i2s_channel_write — миллисекунды (внутри pdMS_TO_TICKS), поэтому
+// portMAX_DELAY туда передавать нельзя. Блок длится 1.33 мс; 200 мс — заведомо «никогда» в норме.
+static constexpr uint32_t I2S_WRITE_TIMEOUT_MS = 200;
+static uint32_t s_write_fails = 0;   // только аудио-задача (Core 0) — синхронизация не нужна
+
 // Состояние эффект-секции (этап 5). Кольцевые буферы delay — в PSRAM (аллокация в audio_init).
 static FxState s_fx = {};
 
@@ -145,6 +150,9 @@ static void audio_task(void *arg)
         // Параметры синта — до дренажа (нужны аллокатору при note-on: poly/legato/glide).
         SynthParams sp;
         build_synth_params(&sp);
+        // Режим полифонии — тоже до дренажа: смена poly делает all-notes-off, и нота, пришедшая
+        // в этом же блоке, иначе получила бы key_down=false сразу после аллокации и пропала.
+        synth_set_poly(sp.poly_voices);
         // Тик глобальных LFO (control-rate) → мод-источники. Читатель — мод-матрица в voice_render.
         sp.voice.mod_src[MOD_SRC_LFO1] = lfo_tick(&lfo[0], get_param(PARAM_LFO1_RATE), lfo_dt,
                                                   (uint8_t)get_param(PARAM_LFO1_SHAPE));
@@ -177,16 +185,23 @@ static void audio_task(void *arg)
             synth_render(&sp, (float)SAMPLE_RATE, fbuf, BLOCK_FRAMES);   // сумма активных голосов
         }
 
-        // Хвост эффектов: overdrive → МАСТЕР-СОФТ-КЛИП (нормировка суммы голосов в [-1,1] ДО эффектов) →
-        // split L/R → delay (стерео) → reverb (стерео) → hard-clamp пиков wet → scope(L) → громкость →
-        // int16. Клип ДО эффектов принципиален: delay/reverb с обратной связью калиброваны на вход ~[-1,1];
-        // если кормить сырой суммой голосов (может быть 3–8×), wet раздувается и даже 1% mix звучит громко.
-        // Все FX off → сухой ≤1 проходит hard-clamp без изменений = доэффектный моно. Тест-тон обходит всё.
+        // Хвост эффектов: overdrive → МАСТЕР-HARD-CLAMP (ограничение суммы голосов в [-1,1] ДО
+        // эффектов) → split L/R → delay (стерео) → reverb (стерео) → hard-clamp пиков wet → scope(L)
+        // → громкость → int16. Ограничение ДО эффектов принципиально: delay/reverb с обратной связью
+        // калиброваны на вход ~[-1,1]; если кормить сырой суммой голосов (может быть 3–8×), wet
+        // раздувается и даже 1% mix звучит громко.
+        //
+        // Здесь был ВТОРОЙ soft-clip m/(1+|m|) — тот же, что уже стоит в голосе. Из-за него тракт
+        // сжимался дважды: одиночный голос с пиком 0.5 выходил на 0.333 (−9.5 dBFS при master=1), а
+        // сумма 8 голосов (~4) — на 0.8, то есть аккорд был громче одной ноты всего в 2.4 раза вместо
+        // 8. Схема, зафиксированная в tech-debt D-010, другая: soft-clip в ГОЛОСЕ + hard-clamp на
+        // мастере. Приводим код к документу — hard-clamp так же надёжно даёт [-1,1] для FX, но
+        // прозрачен ниже единицы, так что уровни перестают проседать без причины.
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             float m = fbuf[i];
             if (!test_on) {
                 m = fx_overdrive(m, &sp.fx);
-                m = m / (1.0f + fabsf(m));   // мастер софт-клип суммы голосов → [-1,1] (нормированный вход в FX)
+                if (m > 1.0f) m = 1.0f; else if (m < -1.0f) m = -1.0f;   // мастер hard-clamp (D-010)
             }
             chL[i] = chR[i] = m;
         }
@@ -224,23 +239,52 @@ static void audio_task(void *arg)
                              std::memory_order_relaxed);
         if (gen_us > BLOCK_US) s_late_blocks.fetch_add(1, std::memory_order_relaxed);
 
+        // Таймаут в МИЛЛИСЕКУНДАХ, не в тиках: внутри он идёт в pdMS_TO_TICKS, и portMAX_DELAY
+        // свернулся бы в ~11.9 часа, а не в бесконечность. Берём заведомо больше длительности
+        // блока, но конечное — чтобы отказ канала был виден, а не превратился в вечное ожидание.
+        //
+        // Возврат и written проверяем: i2s_channel_write крутит цикл, пока канал в состоянии
+        // RUNNING, и при выходе из него возвращается с ЧАСТИЧНОЙ записью. Без проверки задача
+        // провалилась бы сквозь write в генерацию следующего блока без точки блокировки —
+        // 100% Core 0, голодание IDLE0, TWDT каждые 5 с и ни строчки в логе о причине.
         size_t written = 0;
-        i2s_channel_write(s_tx, block, sizeof(block), &written, portMAX_DELAY);
+        const esp_err_t werr = i2s_channel_write(s_tx, block, sizeof(block), &written,
+                                                 I2S_WRITE_TIMEOUT_MS);
+        if (werr != ESP_OK || written != sizeof(block)) {
+            ++s_write_fails;
+            if (s_write_fails <= 3 || (s_write_fails % 1000) == 0) {   // не заливаем лог
+                ESP_LOGE(TAG, "i2s_channel_write: %s, записано %u из %u (сбоев: %lu)",
+                         esp_err_to_name(werr), (unsigned)written, (unsigned)sizeof(block),
+                         (unsigned long)s_write_fails);
+            }
+            // Отдаём процессор, чтобы при постоянном отказе канала задача не съела Core 0 целиком.
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
     }
 }
+
+// Асимметрия таймаутов намеренная. Потерянный NOTE_ON лишь неслышен, потерянный NOTE_OFF — вечный
+// дрон: голос остаётся с открытым gate, других механизмов релиза нет, и снять его можно только
+// повторным нажатием той же ноты. Поэтому note-off ждёт место в очереди (зовут из comm_task на
+// Core 1 — блокироваться на десятки мс там можно), а note-on по-прежнему не ждёт.
+static constexpr TickType_t NOTE_OFF_WAIT = pdMS_TO_TICKS(20);
 
 void audio_note_on(uint8_t note, uint8_t vel)
 {
     if (!s_note_q) return;
     const NoteEvent ev = { 1, note, vel };
-    xQueueSend(s_note_q, &ev, 0);   // не блокируемся (зовут с Core 1); переполнение → событие теряется
+    if (xQueueSend(s_note_q, &ev, 0) != pdTRUE) {   // не блокируемся (зовут с Core 1)
+        ESP_LOGW(TAG, "нотная очередь полна — NOTE_ON %u потерян", (unsigned)note);
+    }
 }
 
 void audio_note_off(uint8_t note)
 {
     if (!s_note_q) return;
     const NoteEvent ev = { 0, note, 0 };
-    xQueueSend(s_note_q, &ev, 0);
+    if (xQueueSend(s_note_q, &ev, NOTE_OFF_WAIT) != pdTRUE) {
+        ESP_LOGE(TAG, "нотная очередь полна — NOTE_OFF %u потерян, нота залипнет", (unsigned)note);
+    }
 }
 
 void audio_scope_read(int8_t *out)
@@ -331,11 +375,21 @@ void audio_init(void)
     }
 
     // Нотная очередь Core 1 → Core 0. Глубина с запасом (шквал нот дренится за блок ~1.3 мс).
+    // Проверяем NULL: audio_task зовёт xQueueReceive безусловно, и на NULL это configASSERT внутри
+    // FreeRTOS — цикл ребутов с бэктрейсом, указывающим куда угодно, кроме провалившегося
+    // выделения. Внутренняя DRAM тут уже плотная: реверб забрал ~110 КБ выше.
     s_note_q = xQueueCreate(32, sizeof(NoteEvent));
+    if (!s_note_q) {
+        ESP_LOGE(TAG, "не выделить нотную очередь — аудио-задача не запущена, звука не будет");
+        return;
+    }
 
     // 3) Аудио-задача на Core 0 (Core 1 отдан comm/UI). Приоритет выше comm(5): звук важнее.
     //    Стек 6 КБ: SynthParams + float-буферы на стеке (пул голосов — статический, не тут).
-    xTaskCreatePinnedToCore(audio_task, "audio", 6144, nullptr, 10, nullptr, 0);
+    if (xTaskCreatePinnedToCore(audio_task, "audio", 6144, nullptr, 10, nullptr, 0) != pdPASS) {
+        ESP_LOGE(TAG, "не создать аудио-задачу — звука не будет");
+        return;
+    }
 
     ESP_LOGI(TAG, "I2S TX %u Гц/16 бит, BCK=%d WS=%d DIN=%d — полифония 3.5/3.6 (до 8 голосов + glide)",
              (unsigned)SAMPLE_RATE, (int)PIN_BCK, (int)PIN_WS, (int)PIN_DIN);

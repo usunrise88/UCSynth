@@ -11,7 +11,14 @@ import (
 )
 
 // Player is the sequencer. Construct with New; drive playback with Start/Stop.
+//
+// Two mutexes, deliberately. mu guards the fields and is never held across an emit, so UI reads of
+// the grid stay fast even when a device write blocks. emitMu serializes the whole
+// read-sounding-set → emit sequence between advance and Stop: without it Stop could take the set
+// advance had just recorded, send NOTE_OFF for notes advance has not sounded yet, and then advance
+// would sound them — with the transport already stopped, so nothing would ever release them.
 type Player struct {
+	emitMu   sync.Mutex
 	mu       sync.Mutex
 	steps    int
 	lo, hi   int // inclusive MIDI pitch range
@@ -72,12 +79,26 @@ func (p *Player) Clear() {
 	p.cells = map[[2]int]bool{}
 }
 
+// stepInterval must be called with p.mu held.
 func (p *Player) stepInterval() time.Duration {
 	// 16th notes: four steps per quarter-note beat.
 	return time.Minute / time.Duration(p.bpm*4)
 }
 
-// SetBPM changes tempo, restarting the clock if playing.
+// interval is stepInterval for callers that do not hold the lock (the clock goroutine).
+func (p *Player) interval() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stepInterval()
+}
+
+// SetBPM changes tempo. Playback keeps its position: the clock goroutine picks the new interval up on
+// its next tick.
+//
+// It used to Stop()+Start(), which also reset cur to -1 and released every sounding note — so nudging
+// the tempo on step 11 of a 16-step pattern jumped back to step 0 with the sound cut. It also opened
+// the Stop-vs-advance window on every single click, making tempo tweaking the most likely way to
+// strand a note.
 func (p *Player) SetBPM(bpm int) {
 	if bpm < 20 {
 		bpm = 20
@@ -87,12 +108,7 @@ func (p *Player) SetBPM(bpm int) {
 	}
 	p.mu.Lock()
 	p.bpm = bpm
-	restart := p.playing
 	p.mu.Unlock()
-	if restart {
-		p.Stop()
-		p.Start()
-	}
 }
 
 // Start begins playback from before step 0 (the first tick sounds step 0).
@@ -112,12 +128,18 @@ func (p *Player) Start() {
 	go func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
+		cur := interval
 		for {
 			select {
 			case <-stop:
 				return
 			case <-t.C:
 				p.advance()
+				// Pick up tempo changes without restarting the transport (see SetBPM).
+				if want := p.interval(); want != cur {
+					cur = want
+					t.Reset(want)
+				}
 			}
 		}
 	}()
@@ -125,13 +147,19 @@ func (p *Player) Start() {
 
 // Stop halts playback and releases any sounding notes.
 func (p *Player) Stop() {
+	p.emitMu.Lock()
+	defer p.emitMu.Unlock()
+
 	p.mu.Lock()
 	if !p.playing {
 		p.mu.Unlock()
 		return
 	}
 	p.playing = false
-	close(p.stopCh)
+	if p.stopCh != nil { // nil when playing was set without Start (advance is unit-tested clockless)
+		close(p.stopCh)
+		p.stopCh = nil
+	}
 	offs := p.sounding
 	p.sounding = nil
 	p.cur = -1
@@ -147,8 +175,12 @@ func (p *Player) Stop() {
 }
 
 // advance performs one step: release the previous step's notes, move to the next step, sound it.
-// Emit calls happen outside the lock so a blocking device write can't stall UI access to the grid.
+// Emit calls happen outside p.mu so a blocking device write can't stall UI access to the grid, but
+// under p.emitMu so they can't interleave with Stop's — see emitMu.
 func (p *Player) advance() {
+	p.emitMu.Lock()
+	defer p.emitMu.Unlock()
+
 	p.mu.Lock()
 	if !p.playing {
 		p.mu.Unlock()

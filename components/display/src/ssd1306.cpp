@@ -4,6 +4,7 @@
 
 static const char *TAG = "ssd1306";
 static i2c_master_dev_handle_t s_dev = nullptr;
+static uint32_t s_flush_fails = 0;   // подряд идущие сбои I2C-выдачи кадра (0 = шина в порядке)
 
 bool ssd1306_init(i2c_master_bus_handle_t bus, uint8_t addr)
 {
@@ -49,12 +50,29 @@ bool ssd1306_init(i2c_master_bus_handle_t bus, uint8_t addr)
 void ssd1306_flush(const uint8_t *fb)
 {
     if (!s_dev) return;
-    // Адресуемся на весь экран: колонки 0..127, страницы 0..7.
-    const uint8_t win[] = {0x00, 0x21, 0x00, 0x7F, 0x22, 0x00, 0x07};
-    i2c_master_transmit(s_dev, win, sizeof(win), 100);
-    // Данные одним пакетом: [0x40 = поток данных][1024 байта GDDRAM].
-    static uint8_t tx[1 + SSD1306_FB_SIZE];
-    tx[0] = 0x40;
-    memcpy(tx + 1, fb, SSD1306_FB_SIZE);
-    i2c_master_transmit(s_dev, tx, sizeof(tx), 100);
+    // Ошибки покадровой выдачи проверяем: путь init свою transmit проверяет, а горячий — нет, и
+    // NACK/таймаут посреди сессии (маргинальный провод, просадка на шине, контеншен после
+    // подключения второго устройства) замораживал картинку на последнем удачном кадре без лога,
+    // без счётчика и без попытки ре-инициализации. Отличить «OLED умер» от «прошивка зависла» было
+    // невозможно — а OLED здесь и есть отладочный прибор аудиотракта.
+    const uint8_t win[] = {0x00, 0x21, 0x00, 0x7F, 0x22, 0x00, 0x07};  // колонки 0..127, страницы 0..7
+    esp_err_t err = i2c_master_transmit(s_dev, win, sizeof(win), 100);
+    if (err == ESP_OK) {
+        // Данные одним пакетом: [0x40 = поток данных][1024 байта GDDRAM].
+        static uint8_t tx[1 + SSD1306_FB_SIZE];
+        tx[0] = 0x40;
+        memcpy(tx + 1, fb, SSD1306_FB_SIZE);
+        err = i2c_master_transmit(s_dev, tx, sizeof(tx), 100);
+    }
+    if (err != ESP_OK) {
+        ++s_flush_fails;
+        if (s_flush_fails <= 3 || (s_flush_fails % 300) == 0) {   // ~раз в 10 с при 30 fps
+            ESP_LOGW(TAG, "I2C flush: %s (сбоев подряд: %lu) — проверь шину/подтяжки",
+                     esp_err_to_name(err), (unsigned long)s_flush_fails);
+        }
+    } else {
+        s_flush_fails = 0;
+    }
 }
+
+uint32_t ssd1306_flush_fails(void) { return s_flush_fails; }

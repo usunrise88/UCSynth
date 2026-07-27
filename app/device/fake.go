@@ -20,6 +20,10 @@ type Fake struct {
 	order  []uint16
 	params map[uint16]proto.Param
 	stat   proto.Stat
+
+	dropParams int  // omit this many PARAM frames from the next LIST (simulated CRC loss)
+	dropSticky bool // keep dropping on every LIST instead of just the next one
+	mute       bool // stop answering entirely (simulated wedged firmware)
 }
 
 func NewFake(conn io.ReadWriteCloser, params []proto.Param, stat proto.Stat) *Fake {
@@ -47,11 +51,35 @@ func (f *Fake) Run() {
 	}
 }
 
+// DropNextParams makes the next LIST omit n PARAM frames while still reporting the true count in
+// LISTEND — what a log line colliding with a PARAM frame looks like from the client's side. With
+// sticky set, every LIST drops them, so the client's retries can be exercised to exhaustion.
+func (f *Fake) DropNextParams(n int, sticky bool) {
+	f.mu.Lock()
+	f.dropParams, f.dropSticky = n, sticky
+	f.mu.Unlock()
+}
+
+// Mute makes the fake stop answering, simulating firmware that wedged with the port still open.
+func (f *Fake) Mute() { f.mu.Lock(); f.mute = true; f.mu.Unlock() }
+
+func (f *Fake) muted() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.mute }
+
 func (f *Fake) respond(body []byte) {
+	if f.muted() {
+		return
+	}
 	switch proto.Opcode(body) {
 	case proto.CmdList:
 		f.mu.Lock()
-		for _, id := range f.order {
+		drop := f.dropParams
+		if !f.dropSticky {
+			f.dropParams = 0
+		}
+		for i, id := range f.order {
+			if i < drop {
+				continue // frame lost on the wire
+			}
 			f.write(proto.ParamRespFrame(f.params[id]))
 		}
 		count := uint16(len(f.order))
@@ -105,11 +133,14 @@ func (f *Fake) respond(body []byte) {
 func (f *Fake) write(frame []byte) { _, _ = f.conn.Write(frame) }
 
 // clampQuant mirrors control.cpp clamp_and_quantize: clamp to [min,max], round non-float types.
+// The comparisons are inverted so NaN lands on min instead of sailing through — see the C version
+// for why that matters. Keeping the Fake faithful to the firmware's *bugs* would make every
+// integration test in this package structurally unable to catch them.
 func clampQuant(p proto.Param, v float32) float32 {
-	if v < p.Min {
+	if !(v >= p.Min) { // false for NaN and for v < min
 		v = p.Min
 	}
-	if v > p.Max {
+	if !(v <= p.Max) { // false for +Inf and for v > max
 		v = p.Max
 	}
 	if p.Type != proto.TypeFloat {

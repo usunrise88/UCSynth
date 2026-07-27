@@ -37,8 +37,10 @@ func TestMatrixAndLFOMapped(t *testing.T) {
 		if f := For("mtx" + n + "_src"); f.Block != "modmatrix" || len(f.EnumLabels) != 8 {
 			t.Fatalf("mtx%s_src → %+v, want modmatrix with 8 source labels", n, f)
 		}
-		if f := For("mtx" + n + "_dst"); f.Block != "modmatrix" || len(f.EnumLabels) != 7 {
-			t.Fatalf("mtx%s_dst → %+v, want modmatrix with 7 dest labels", n, f)
+		// 6 приёмников: — / Pitch / Cutoff / Res / Amp / Wave-поз. FX убран — он выбирался в GUI,
+		// но DSP его не читал (эффекты глобальные, матрица пер-голосная), см. ModDest в voice.h.
+		if f := For("mtx" + n + "_dst"); f.Block != "modmatrix" || len(f.EnumLabels) != 6 {
+			t.Fatalf("mtx%s_dst → %+v, want modmatrix with 6 dest labels", n, f)
 		}
 		if f := For("mtx" + n + "_depth"); f.Block != "modmatrix" || f.EnumLabels != nil {
 			t.Fatalf("mtx%s_depth → %+v, want modmatrix plain knob", n, f)
