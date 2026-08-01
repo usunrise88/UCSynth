@@ -169,6 +169,9 @@ static void audio_task(void *arg)
         const SeqConfig scfg = {
             (int)get_param(PARAM_SEQ_BPM), get_param(PARAM_SEQ_SWING),
             get_param(PARAM_SEQ_PLAYING) > 0.5f, get_param(PARAM_SEQ_ON) > 0.5f,
+            get_param(PARAM_ARP_ON) > 0.5f, (uint8_t)get_param(PARAM_ARP_MODE),
+            (int)get_param(PARAM_ARP_OCTAVES), (int)get_param(PARAM_ARP_RATE),
+            get_param(PARAM_ARP_HOLD) > 0.5f,
         };
         SeqNoteEvent seq_ev[16];
         const int seq_nev = seq_tick(&s_seq, &scfg, (float)SAMPLE_RATE, BLOCK_FRAMES, seq_ev, 16);
@@ -192,11 +195,13 @@ static void audio_task(void *arg)
             else              synth_note_off(&sp, seq_ev[i].note);
         }
 
-        // Дренаж нотной очереди → синт (аллокация голосов / стек нот — внутри synth).
+        // Дренаж нотной очереди → синт, либо в арпеджиатор (этап 7.3): при arp_on клавиши/MIDI кормят
+        // множество held арпа (звучит его последовательность), не играют напрямую.
         NoteEvent ev;
         while (xQueueReceive(s_note_q, &ev, 0) == pdTRUE) {
-            if (ev.on) synth_note_on(&sp, ev.note, ev.vel);
-            else       synth_note_off(&sp, ev.note);
+            if (scfg.arp_on)   seq_arp_note(&s_seq, ev.note, ev.on != 0, scfg.arp_hold);
+            else if (ev.on)    synth_note_on(&sp, ev.note, ev.vel);
+            else               synth_note_off(&sp, ev.note);
         }
 
         // control-rate: мастер и режим тест-тона.
