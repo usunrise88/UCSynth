@@ -256,3 +256,63 @@ func TestParseStat(t *testing.T) {
 		t.Fatalf("ParseStat got %+v, want %+v", got, s)
 	}
 }
+
+// Sequencer step codec round-trip (stage 7).
+func TestSeqStepCodecRoundTrip(t *testing.T) {
+	st := SeqStep{Active: true, Notes: []uint8{60, 67}, Velocity: 110, TrigProb: 0.5,
+		Plocks: []SeqPlock{{ID: 20, Val: 1234.5}, {ID: 79, Val: -0.25}}}
+	b := EncodeStep(st)
+	got, n, err := DecodeStep(b)
+	if err != nil || n != len(b) {
+		t.Fatalf("decode step: n=%d len=%d err=%v", n, len(b), err)
+	}
+	if !got.Active || len(got.Notes) != 2 || got.Notes[1] != 67 || got.Velocity != 110 {
+		t.Fatalf("step fields: %+v", got)
+	}
+	if len(got.Plocks) != 2 || got.Plocks[0].ID != 20 || math.Abs(float64(got.Plocks[0].Val-1234.5)) > 0.01 {
+		t.Fatalf("plocks: %+v", got.Plocks)
+	}
+	if got.TrigProb < 0.49 || got.TrigProb > 0.51 {
+		t.Fatalf("trigprob %v", got.TrigProb)
+	}
+	if _, _, err := DecodeStep(b[:1]); err == nil {
+		t.Fatal("truncated step must error")
+	}
+}
+
+// Sequencer frame builders/parsers round-trip (stage 7).
+func TestSeqFrameRoundTrip(t *testing.T) {
+	dec := func(frame []byte) []byte {
+		d := NewDecoder()
+		b := d.Push(frame)
+		if len(b) != 1 {
+			t.Fatalf("decoded %d frames", len(b))
+		}
+		return b[0]
+	}
+	st := SeqStep{Active: true, Notes: []uint8{62}, Velocity: 100, TrigProb: 1}
+	if b := dec(SeqSetStepFrame(5, st)); Opcode(b) != CmdSeqSetStep || b[1] != 5 {
+		t.Fatalf("SET_STEP: %v", b)
+	}
+	if step, gs, err := ParseSeqStep(dec(SeqStepRespFrame(5, st))); err != nil || step != 5 || !gs.Active || gs.Notes[0] != 62 {
+		t.Fatalf("SEQ_STEP resp: step=%d %+v err=%v", step, gs, err)
+	}
+	if Opcode(dec(SeqGetFrame())) != CmdSeqGet {
+		t.Fatal("GET opcode")
+	}
+	if b := dec(SeqSaveFrame(PresetSlotNew, "Beat/A")); Opcode(b) != CmdSeqSave {
+		t.Fatal("SAVE opcode")
+	}
+	if b := dec(SeqLoadFrame(3)); Opcode(b) != CmdSeqLoad || binary.LittleEndian.Uint16(b[1:]) != 3 {
+		t.Fatal("LOAD slot")
+	}
+	if e, err := ParseSeqEntry(dec(SeqEntryFrame(7, "X/Y"))); err != nil || e.Slot != 7 || e.Path != "X/Y" {
+		t.Fatalf("ENTRY: %+v err=%v", e, err)
+	}
+	if c, err := ParseSeqEnd(dec(SeqEndFrame(4))); err != nil || c != 4 {
+		t.Fatalf("END %d", c)
+	}
+	if s, err := ParseSeqSaved(dec(SeqSavedFrame(9))); err != nil || s != 9 {
+		t.Fatalf("SAVED %d", s)
+	}
+}

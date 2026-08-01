@@ -118,3 +118,43 @@ func TestPresetFlow(t *testing.T) {
 	d.PresetDelete(0)
 	waitFor(t, "deleted", func() bool { return len(d.Snapshot().Presets) == 0 })
 }
+
+func TestSeqPatternFlow(t *testing.T) {
+	c1, c2 := net.Pipe()
+	fake := NewFake(c2, testRegistry(), proto.Stat{})
+	go fake.Run()
+
+	d := New(c1, nil)
+	d.Start()
+	defer d.Close()
+	waitFor(t, "Synced", func() bool { return d.Snapshot().State == Synced })
+
+	// Upload a step, GET → live pattern reflects it.
+	d.SeqSetStep(3, proto.SeqStep{Active: true, Notes: []uint8{62}, Velocity: 100, TrigProb: 1})
+	d.SeqGet()
+	waitFor(t, "step 3 uploaded", func() bool {
+		st := d.Snapshot().SeqPattern[3]
+		return st.Active && len(st.Notes) == 1 && st.Notes[0] == 62
+	})
+
+	// Save → appears in the pattern directory.
+	d.SeqSave(proto.PresetSlotNew, "Beats/One")
+	waitFor(t, "pattern listed", func() bool {
+		ps := d.Snapshot().Patterns
+		return len(ps) == 1 && ps[0].Slot == 0 && ps[0].Path == "Beats/One"
+	})
+
+	// Overwrite the step, then load → restored + GET refreshes.
+	d.SeqSetStep(3, proto.SeqStep{})
+	d.SeqGet()
+	waitFor(t, "step 3 cleared", func() bool { return !d.Snapshot().SeqPattern[3].Active })
+	d.SeqLoad(0)
+	waitFor(t, "load restored step 3", func() bool {
+		st := d.Snapshot().SeqPattern[3]
+		return st.Active && len(st.Notes) == 1 && st.Notes[0] == 62
+	})
+
+	// Delete empties the directory.
+	d.SeqDelete(0)
+	waitFor(t, "pattern deleted", func() bool { return len(d.Snapshot().Patterns) == 0 })
+}

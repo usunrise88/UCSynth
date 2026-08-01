@@ -2,7 +2,9 @@ package ui
 
 import (
 	"image"
+	"net"
 	"testing"
+	"time"
 
 	"gioui.org/f32"
 	"gioui.org/io/input"
@@ -10,6 +12,7 @@ import (
 	"gioui.org/layout"
 	"gioui.org/op"
 
+	"ucsynth/app/device"
 	"ucsynth/app/proto"
 )
 
@@ -56,8 +59,19 @@ func TestControllerTabsSmoke(t *testing.T) {
 	}
 }
 
+// TestPianoRollClickToggles clicks a grid cell on a connected editor and checks the note both lands in
+// the local working copy and is uploaded to the device (SeqSetStep → SeqGet round-trip).
 func TestPianoRollClickToggles(t *testing.T) {
 	c := New(func() {})
+	c1, c2 := net.Pipe()
+	fake := device.NewFake(c2, smokeParams, proto.Stat{})
+	go fake.Run()
+	dev := device.New(c1, nil)
+	dev.Start()
+	defer dev.Close()
+	c.dev = dev
+	c.sink.set(dev)
+
 	var r input.Router
 	const W, H = 800, 400
 	gtx := layout.Context{Ops: new(op.Ops), Metric: testMetric, Source: r.Source()}
@@ -73,13 +87,80 @@ func TestPianoRollClickToggles(t *testing.T) {
 	if g.cellW == 0 || g.cellH == 0 {
 		t.Fatal("grid geometry not set")
 	}
-	step, pitch := 2, c.player.Hi() // top row
+	step, pitch := 2, c.seqHi // top row
 	x := g.x0 + step*g.cellW + g.cellW/2
 	y := g.cellH / 2 // row 0 = highest pitch
 	r.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: f32.Pt(float32(x), float32(y)), PointerID: 1})
-	frame() // decodes the click → toggles the cell
+	frame() // decodes the click → toggles the cell + uploads the step
 
-	if !c.player.On(step, pitch) {
-		t.Fatalf("click at step %d, pitch %d did not toggle the cell", step, pitch)
+	if !c.noteOn(step, pitch) {
+		t.Fatalf("click at step %d, pitch %d did not toggle the working copy", step, pitch)
+	}
+	// The step must reach the device: read it back and confirm the pitch is stored there.
+	dev.SeqGet()
+	deadline := time.Now().Add(2 * time.Second)
+	uploaded := func() bool {
+		st := dev.Snapshot().SeqPattern[step]
+		for _, n := range st.Notes {
+			if int(n) == pitch {
+				return true
+			}
+		}
+		return false
+	}
+	for time.Now().Before(deadline) && !uploaded() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !uploaded() {
+		t.Fatalf("clicked note (step %d, pitch %d) was not uploaded to the device", step, pitch)
+	}
+}
+
+// TestSeqTabPatternBrowser wires a connected fake device into the seq tab and checks the on-device
+// pattern directory is auto-listed on connect and rendered (handleSeqBrowser / layoutSeqTree).
+func TestSeqTabPatternBrowser(t *testing.T) {
+	c := New(func() {})
+	c1, c2 := net.Pipe()
+	fake := device.NewFake(c2, smokeParams, proto.Stat{})
+	go fake.Run()
+	dev := device.New(c1, nil)
+	dev.Start()
+	defer dev.Close()
+	c.dev = dev
+	c.sink.set(dev)
+
+	var r input.Router
+	gtx := layout.Context{Ops: new(op.Ops), Metric: testMetric, Source: r.Source()}
+	frame := func() {
+		gtx.Reset()
+		gtx.Metric = testMetric
+		gtx.Constraints = layout.Exact(image.Pt(1100, 760))
+		c.tab = tabSeq
+		c.Layout(gtx) // handleButtons → handleSeq (auto GET+LIST); layoutPianoRoll → layoutSeqTree
+		r.Frame(gtx.Ops)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	synced := func() bool { return dev.Snapshot().State == device.Synced }
+	for time.Now().Before(deadline) && !synced() {
+		frame()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !synced() {
+		t.Fatal("device never synced")
+	}
+
+	dev.SeqSave(proto.PresetSlotNew, "Beats/One")
+	got := false
+	for time.Now().Before(deadline) {
+		frame()
+		if pats := dev.Snapshot().Patterns; len(pats) == 1 && pats[0].Path == "Beats/One" && len(c.seqEntryBtns) == 1 {
+			got = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !got {
+		t.Fatalf("saved pattern not reflected in the sequencer tab (patterns=%v, btns=%d)",
+			dev.Snapshot().Patterns, len(c.seqEntryBtns))
 	}
 }

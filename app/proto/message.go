@@ -21,6 +21,14 @@ const (
 	CmdPresetDelete = 0x0A // [slot:u16]
 	CmdPresetRename = 0x0B // [slot:u16][path_len:u8][path]
 
+	CmdSeqSetStep = 0x0C // [step:u8][step-blob]
+	CmdSeqGet     = 0x0D // (none) → RSP_SEQ_STEP×16
+	CmdSeqSave    = 0x0E // [slot:u16 (0xFFFF=new)][path_len:u8][path]
+	CmdSeqLoad    = 0x0F // [slot:u16]
+	CmdSeqDelete  = 0x10 // [slot:u16]
+	CmdSeqList    = 0x11 // (none)
+	CmdSeqRename  = 0x12 // [slot:u16][path_len:u8][path]
+
 	RspAck         = 0x80 // (none) — reply to NOTE_ON/OFF, PRESET_LOAD/DELETE/RENAME
 	RspValue       = 0x81 // [id:u16][val:f32] — reply to GET and SET (post-clamp)
 	RspParam       = 0x82 // [id:u16][type:u8][min,max,def,cur:f32][namelen:u8][name]
@@ -29,7 +37,23 @@ const (
 	RspPresetEnd   = 0x85 // [count:u16]
 	RspStat        = 0x86 // [heap,minheap,uptime_ms,cpu_permille,underruns:u32]
 	RspPresetSaved = 0x87 // [slot:u16]
-	RspErr         = 0xFF // [code:u8]
+
+	RspSeqStep  = 0x88 // [step:u8][step-blob]
+	RspSeqEntry = 0x89 // [slot:u16][path_len:u8][path]
+	RspSeqEnd   = 0x8A // [count:u16]
+	RspSeqSaved = 0x8B // [slot:u16]
+
+	RspErr = 0xFF // [code:u8]
+)
+
+// SeqSteps is the pattern's fixed step count (mirrors SEQ_STEPS in seq_engine.h).
+const SeqSteps = 16
+
+// SeqMaxNotes / SeqMaxPlocks — per-step chord and p-lock caps (mirror SEQ_MAX_NOTES / SEQ_MAX_PLOCKS
+// in seq_engine.h). EncodeStep enforces them on the wire; the editor uses them to cap edits.
+const (
+	SeqMaxNotes  = 4
+	SeqMaxPlocks = 8
 )
 
 // PresetSlotNew in a PRESET_SAVE means "allocate a new slot". Mirrors PRESET_SLOT_NEW in preset.h.
@@ -111,9 +135,11 @@ func slotFrame(cmd byte, slot uint16) []byte {
 func PresetListFrame() []byte { return EncodeFrame([]byte{CmdPresetList}) }
 
 // PresetSaveFrame snapshots the device's current registry into slot (PresetSlotNew = new) under path.
-func PresetSaveFrame(slot uint16, path string) []byte { return slotPathFrame(CmdPresetSave, slot, path) }
-func PresetLoadFrame(slot uint16) []byte              { return slotFrame(CmdPresetLoad, slot) }
-func PresetDeleteFrame(slot uint16) []byte            { return slotFrame(CmdPresetDelete, slot) }
+func PresetSaveFrame(slot uint16, path string) []byte {
+	return slotPathFrame(CmdPresetSave, slot, path)
+}
+func PresetLoadFrame(slot uint16) []byte   { return slotFrame(CmdPresetLoad, slot) }
+func PresetDeleteFrame(slot uint16) []byte { return slotFrame(CmdPresetDelete, slot) }
 func PresetRenameFrame(slot uint16, path string) []byte {
 	return slotPathFrame(CmdPresetRename, slot, path)
 }
@@ -304,6 +330,174 @@ func PresetEndFrame(count uint16) []byte {
 func PresetSavedFrame(slot uint16) []byte {
 	b := make([]byte, 3)
 	b[0] = RspPresetSaved
+	binary.LittleEndian.PutUint16(b[1:], slot)
+	return EncodeFrame(b)
+}
+
+// --- sequencer (stage 7): pattern step codec + frame builders/parsers ---
+
+type SeqPlock struct {
+	ID  uint16
+	Val float32
+}
+
+// SeqStep mirrors SeqStep in seq_engine.h. Notes ≤4 (chord), Plocks ≤8.
+type SeqStep struct {
+	Active   bool
+	Notes    []uint8
+	Velocity uint8
+	TrigProb float32 // 0..1
+	Plocks   []SeqPlock
+}
+
+type SeqEntry struct {
+	Slot uint16
+	Path string
+}
+
+// EncodeStep serializes one step: flags|n_notes|notes|velocity|trig_q|n_plocks|plocks. Mirrors seq_codec.
+func EncodeStep(st SeqStep) []byte {
+	nn := len(st.Notes)
+	if nn > 4 {
+		nn = 4
+	}
+	np := len(st.Plocks)
+	if np > 8 {
+		np = 8
+	}
+	b := make([]byte, 0, 5+nn+np*6)
+	var flags byte
+	if st.Active {
+		flags = 1
+	}
+	b = append(b, flags, byte(nn))
+	for i := 0; i < nn; i++ {
+		b = append(b, st.Notes[i])
+	}
+	tq := int(st.TrigProb*255 + 0.5)
+	if tq < 0 {
+		tq = 0
+	} else if tq > 255 {
+		tq = 255
+	}
+	b = append(b, st.Velocity, byte(tq), byte(np))
+	for i := 0; i < np; i++ {
+		var p [6]byte
+		binary.LittleEndian.PutUint16(p[0:], st.Plocks[i].ID)
+		binary.LittleEndian.PutUint32(p[2:], math.Float32bits(st.Plocks[i].Val))
+		b = append(b, p[:]...)
+	}
+	return b
+}
+
+// DecodeStep parses one step, returning it and the number of bytes consumed. errShort on truncation.
+func DecodeStep(b []byte) (SeqStep, int, error) {
+	var st SeqStep
+	if len(b) < 2 {
+		return st, 0, errShort
+	}
+	o := 0
+	st.Active = b[o] != 0
+	o++
+	nn := int(b[o])
+	o++
+	if o+nn > len(b) {
+		return st, 0, errShort
+	}
+	for i := 0; i < nn; i++ {
+		if i < 4 {
+			st.Notes = append(st.Notes, b[o])
+		}
+		o++
+	}
+	if o+3 > len(b) {
+		return st, 0, errShort
+	}
+	st.Velocity = b[o]
+	o++
+	st.TrigProb = float32(b[o]) / 255
+	o++
+	np := int(b[o])
+	o++
+	if o+np*6 > len(b) {
+		return st, 0, errShort
+	}
+	for i := 0; i < np; i++ {
+		id := binary.LittleEndian.Uint16(b[o:])
+		v := math.Float32frombits(binary.LittleEndian.Uint32(b[o+2:]))
+		if i < 8 {
+			st.Plocks = append(st.Plocks, SeqPlock{ID: id, Val: v})
+		}
+		o += 6
+	}
+	return st, o, nil
+}
+
+func SeqSetStepFrame(step uint8, st SeqStep) []byte {
+	return EncodeFrame(append([]byte{CmdSeqSetStep, step}, EncodeStep(st)...))
+}
+func SeqGetFrame() []byte                          { return EncodeFrame([]byte{CmdSeqGet}) }
+func SeqSaveFrame(slot uint16, path string) []byte { return slotPathFrame(CmdSeqSave, slot, path) }
+func SeqLoadFrame(slot uint16) []byte              { return slotFrame(CmdSeqLoad, slot) }
+func SeqDeleteFrame(slot uint16) []byte            { return slotFrame(CmdSeqDelete, slot) }
+func SeqListFrame() []byte                         { return EncodeFrame([]byte{CmdSeqList}) }
+func SeqRenameFrame(slot uint16, path string) []byte {
+	return slotPathFrame(CmdSeqRename, slot, path)
+}
+
+// ParseSeqStep parses RSP_SEQ_STEP: [op][step][step-blob].
+func ParseSeqStep(body []byte) (uint8, SeqStep, error) {
+	if len(body) < 2 {
+		return 0, SeqStep{}, errShort
+	}
+	st, _, err := DecodeStep(body[2:])
+	return body[1], st, err
+}
+func ParseSeqEntry(body []byte) (SeqEntry, error) {
+	if len(body) < 4 {
+		return SeqEntry{}, errShort
+	}
+	nl := int(body[3])
+	if len(body) < 4+nl {
+		return SeqEntry{}, errShort
+	}
+	return SeqEntry{Slot: binary.LittleEndian.Uint16(body[1:]), Path: string(body[4 : 4+nl])}, nil
+}
+func ParseSeqEnd(body []byte) (uint16, error) {
+	if len(body) < 3 {
+		return 0, errShort
+	}
+	return binary.LittleEndian.Uint16(body[1:]), nil
+}
+func ParseSeqSaved(body []byte) (uint16, error) {
+	if len(body) < 3 {
+		return 0, errShort
+	}
+	return binary.LittleEndian.Uint16(body[1:]), nil
+}
+
+// Response frame builders (for the fake firmware / round-trip tests).
+func SeqStepRespFrame(step uint8, st SeqStep) []byte {
+	return EncodeFrame(append([]byte{RspSeqStep, step}, EncodeStep(st)...))
+}
+func SeqEntryFrame(slot uint16, path string) []byte {
+	p := clampPath(path)
+	b := make([]byte, 4, 4+len(p))
+	b[0] = RspSeqEntry
+	binary.LittleEndian.PutUint16(b[1:], slot)
+	b[3] = byte(len(p))
+	b = append(b, p...)
+	return EncodeFrame(b)
+}
+func SeqEndFrame(count uint16) []byte {
+	b := make([]byte, 3)
+	b[0] = RspSeqEnd
+	binary.LittleEndian.PutUint16(b[1:], count)
+	return EncodeFrame(b)
+}
+func SeqSavedFrame(slot uint16) []byte {
+	b := make([]byte, 3)
+	b[0] = RspSeqSaved
 	binary.LittleEndian.PutUint16(b[1:], slot)
 	return EncodeFrame(b)
 }

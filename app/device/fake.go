@@ -28,6 +28,10 @@ type Fake struct {
 
 	presets    map[uint16]fakePreset // in-memory "NVS": slot → {path, values}
 	presetNext uint16                // monotonic slot counter (mirrors preset_store next_id)
+
+	seqPattern [proto.SeqSteps]proto.SeqStep // live pattern
+	seqStore   map[uint16]fakeSeqRec         // in-memory pattern "NVS"
+	seqNext    uint16
 }
 
 // fakePreset mirrors a stored preset blob: a tree path + a registry snapshot (id→value).
@@ -36,9 +40,15 @@ type fakePreset struct {
 	values map[uint16]float32
 }
 
+// fakeSeqRec mirrors a stored pattern: a tree path + the 16-step pattern.
+type fakeSeqRec struct {
+	path string
+	pat  [proto.SeqSteps]proto.SeqStep
+}
+
 func NewFake(conn io.ReadWriteCloser, params []proto.Param, stat proto.Stat) *Fake {
 	f := &Fake{conn: conn, dec: proto.NewDecoder(), params: map[uint16]proto.Param{}, stat: stat,
-		presets: map[uint16]fakePreset{}}
+		presets: map[uint16]fakePreset{}, seqStore: map[uint16]fakeSeqRec{}}
 	for _, p := range params {
 		f.order = append(f.order, p.ID)
 		f.params[p.ID] = p
@@ -231,6 +241,111 @@ func (f *Fake) respond(body []byte) {
 			f.write(fr)
 		}
 		f.write(proto.PresetEndFrame(count))
+	case proto.CmdSeqSetStep:
+		if len(body) < 2 {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		st, _, err := proto.DecodeStep(body[2:])
+		if err != nil {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		f.mu.Lock()
+		if int(body[1]) < proto.SeqSteps {
+			f.seqPattern[body[1]] = st
+		}
+		f.mu.Unlock()
+		f.write(proto.AckFrame())
+	case proto.CmdSeqGet:
+		f.mu.Lock()
+		pat := f.seqPattern
+		f.mu.Unlock()
+		for s := 0; s < proto.SeqSteps; s++ {
+			f.write(proto.SeqStepRespFrame(uint8(s), pat[s]))
+		}
+	case proto.CmdSeqSave:
+		slot, path, ok := parseSlotPath(body)
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		f.mu.Lock()
+		use := slot
+		if slot == 0xFFFF {
+			use = f.seqNext
+			f.seqNext++
+		}
+		f.seqStore[use] = fakeSeqRec{path: path, pat: f.seqPattern}
+		f.mu.Unlock()
+		f.write(proto.SeqSavedFrame(use))
+	case proto.CmdSeqLoad:
+		if len(body) < 3 {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		slot := binary.LittleEndian.Uint16(body[1:])
+		f.mu.Lock()
+		rec, ok := f.seqStore[slot]
+		if ok {
+			f.seqPattern = rec.pat
+		}
+		f.mu.Unlock()
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrNoPreset))
+			return
+		}
+		f.write(proto.AckFrame())
+	case proto.CmdSeqDelete:
+		if len(body) < 3 {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		slot := binary.LittleEndian.Uint16(body[1:])
+		f.mu.Lock()
+		_, ok := f.seqStore[slot]
+		delete(f.seqStore, slot)
+		f.mu.Unlock()
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrNoPreset))
+			return
+		}
+		f.write(proto.AckFrame())
+	case proto.CmdSeqRename:
+		slot, path, ok := parseSlotPath(body)
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		f.mu.Lock()
+		rec, found := f.seqStore[slot]
+		if found {
+			rec.path = path
+			f.seqStore[slot] = rec
+		}
+		f.mu.Unlock()
+		if !found {
+			f.write(proto.ErrRespFrame(proto.ErrNoPreset))
+			return
+		}
+		f.write(proto.AckFrame())
+	case proto.CmdSeqList:
+		f.mu.Lock()
+		sslots := make([]uint16, 0, len(f.seqStore))
+		for s := range f.seqStore {
+			sslots = append(sslots, s)
+		}
+		sort.Slice(sslots, func(i, j int) bool { return sslots[i] < sslots[j] })
+		sframes := make([][]byte, 0, len(sslots)+1)
+		for _, s := range sslots {
+			sframes = append(sframes, proto.SeqEntryFrame(s, f.seqStore[s].path))
+		}
+		scount := uint16(len(sslots))
+		f.mu.Unlock()
+		for _, fr := range sframes {
+			f.write(fr)
+		}
+		f.write(proto.SeqEndFrame(scount))
 	default:
 		f.write(proto.ErrRespFrame(proto.ErrUnknownCmd))
 	}

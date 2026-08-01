@@ -26,7 +26,6 @@ import (
 	"ucsynth/app/midi"
 	"ucsynth/app/patch"
 	"ucsynth/app/proto"
-	"ucsynth/app/seq"
 	"ucsynth/app/serial"
 )
 
@@ -101,15 +100,43 @@ type Controller struct {
 	midiOpen    int // open device index, -1 = none
 	midiMsg     string
 
-	// sequencer (piano-roll)
-	player   *seq.Player
-	playBtn  widget.Clickable
-	stopBtn  widget.Clickable
-	clearBtn widget.Clickable
-	tempoDec widget.Clickable
-	tempoInc widget.Clickable
-	rollTag  struct{} // stable pointer = grid pointer-input tag
-	rollGeom rollGeom
+	// sequencer (piano-roll). The device owns the clock and the live pattern (stage 7); this tab is a
+	// pure editor. pattern is the working copy: seeded from the device on connect/load (watched via
+	// Snapshot.SeqRev) and uploaded per-step on edit. Transport/tempo drive registry params.
+	pattern      [proto.SeqSteps]proto.SeqStep
+	seqSeenRev   uint32         // last SeqRev copied into pattern (reseed when it changes)
+	seqSyncedFor *device.Device // GET the live pattern + LIST once per device connection
+	seqLo, seqHi int            // grid pitch range (constant)
+	seqStepSel   int            // step selected for p-lock editing / column highlight
+	plockParam   int            // index into Snapshot.Params for the p-lock param picker
+	playBtn      widget.Clickable
+	clearBtn     widget.Clickable
+	tempoDec     widget.Clickable
+	tempoInc     widget.Clickable
+	stepBtns     [proto.SeqSteps]widget.Clickable
+	rollTag      struct{} // stable pointer = grid pointer-input tag
+	rollGeom     rollGeom
+
+	// p-lock editor (for the selected step)
+	plockPrev   widget.Clickable
+	plockNext   widget.Clickable
+	plockAdd    widget.Clickable
+	plockClear  widget.Clickable
+	plockRmBtns []widget.Clickable
+	plockVal    widget.Editor
+
+	// pattern browser (device NVS, tree like presets)
+	seqName      widget.Editor
+	seqSaveBtn   widget.Clickable
+	seqLoadBtn   widget.Clickable
+	seqRenameBtn widget.Clickable
+	seqDeleteBtn widget.Clickable
+	seqListBtn   widget.Clickable
+	seqEntryBtns []widget.Clickable
+	seqScroll    widget.List
+	seqSel       uint16
+	seqSelOK     bool
+	seqMsg       string
 
 	// sink routes note on/off from the player/MIDI goroutines to the current device race-safely.
 	sink noteSink
@@ -194,7 +221,7 @@ func (n *noteSink) midiAllOff() {
 var rackCols = [][]string{
 	{"osc1", "osc2", "osc3", "mixer"},
 	{"filter", "ampenv", "fltenv", "waveenv", "overdrive", "delay", "reverb"},
-	{"global", "lfo1", "lfo2", "modmatrix", "lofi", "debug", "misc"},
+	{"global", "lfo1", "lfo2", "modmatrix", "lofi", "seq", "arp", "debug", "misc"},
 }
 var colWeights = []float32{1, 1.15, 1}
 
@@ -214,27 +241,18 @@ func New(invalidate func()) *Controller {
 	c.patchName.SingleLine = true
 	c.patchPath.SingleLine = true
 	c.midiOpen = -1
-	// Sequencer: 2 octaves (C3..C5), 16 steps, 120 BPM. Notes go to the device; redraw moves the playhead.
-	c.player = seq.New(16, 48, 72, 120,
-		func(note int, on bool) {
-			if on {
-				c.sink.on(uint8(note), 100)
-			} else {
-				c.sink.off(uint8(note))
-			}
-		},
-		invalidate,
-	)
+	// Sequencer: 2 octaves (C3..C5). The device runs the clock; this is just the editor pitch range.
+	c.seqLo, c.seqHi = 48, 72
+	c.seqName.SingleLine = true
+	c.plockVal.SingleLine = true
 	c.enumPorts()
 	c.enumMidi()
 	return c
 }
 
-// Shutdown stops playback, closes MIDI, and closes the connection (flushing held notes) at window close.
+// Shutdown closes MIDI and the connection (flushing held notes) at window close. The sequencer clock
+// lives on the device now, so there is no host playback to stop — the synth plays on standalone.
 func (c *Controller) Shutdown() {
-	if c.player != nil {
-		c.player.Stop()
-	}
 	if c.midiIn != nil {
 		c.sink.midiAllOff()
 		c.midiIn.Close()
@@ -287,9 +305,6 @@ func (c *Controller) connect() {
 func (c *Controller) disconnect() { c.disconnectWait(false) }
 
 func (c *Controller) disconnectWait(wait bool) {
-	if c.player != nil {
-		c.player.Stop()
-	}
 	if c.dev != nil {
 		c.kb.AllOff()       // release screen-keyboard notes while the sink still points at the device
 		c.sink.midiAllOff() // ...and MIDI-held ones
@@ -363,7 +378,7 @@ func (c *Controller) Layout(gtx C) D {
 func (c *Controller) layoutTab(gtx C, snap device.Snapshot) D {
 	switch c.tab {
 	case tabSeq:
-		return c.layoutPianoRoll(gtx)
+		return c.layoutPianoRoll(gtx, snap)
 	case tabPatches:
 		return c.layoutPatches(gtx)
 	default:

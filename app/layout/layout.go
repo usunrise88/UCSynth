@@ -33,6 +33,8 @@ var Blocks = []Block{
 	{"delay", "Delay"},
 	{"reverb", "Reverb"},
 	{"lofi", "Lo-fi"},
+	{"seq", "Секвенсор"},
+	{"arp", "Арпеджиатор"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
 }
@@ -53,9 +55,14 @@ var filterLabels = []string{"LP", "HP", "BP", "OFF"}
 // LfoShape, ModSource, ModDest в voice.h / control.h). Индекс вне диапазона → голое число (см. EnumLabel).
 var lfoShapeLabels = []string{"Sine", "Tri", "Saw", "Sqr", "S&H"}
 var modSrcLabels = []string{"—", "LFO1", "LFO2", "VCF-огиб.", "Wave-огиб.", "Velocity", "Mod-wheel", "ToF"}
+
 // FX убран: эффекты считаются один раз после суммы голосов, а матрица пер-голосная — приёмник
 // существовал в GUI, но DSP его не читал, и слот тратился молча (см. ModDest в voice.h).
 var modDstLabels = []string{"—", "Pitch", "Cutoff", "Res", "Amp", "Wave-поз."}
+
+// этап 7 — подписи enum-контролов арпеджиатора (порядок = ArpMode / деления клока в seq_engine.h).
+var arpModeLabels = []string{"Вверх", "Вниз", "Вверх-вниз", "Случайно"}
+var arpRateLabels = []string{"1/4", "1/8", "1/16", "1/32"}
 
 // byName maps a firmware param name → its presentation. Names come from control.h (stable).
 var byName = map[string]Field{
@@ -137,6 +144,17 @@ var byName = map[string]Field{
 	"reverb_moddepth": {"reverb", "Mod Depth", "", nil},
 	"reverb_modrate":  {"reverb", "Mod Rate", "Гц", nil},
 	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
+	// этап 7 — секвенсор/арпеджиатор (движок на устройстве; сетку/транспорт рисует вкладка «Секвенсор»,
+	// а эти скаляры появляются в рэке обычными контролами через LIST)
+	"seq_bpm":     {"seq", "Темп", "BPM", nil},
+	"seq_swing":   {"seq", "Swing", "", nil},
+	"seq_playing": {"seq", "Играть", "", nil},
+	"seq_on":      {"seq", "Секв. вкл", "", nil},
+	"arp_on":      {"arp", "Вкл", "", nil},
+	"arp_mode":    {"arp", "Режим", "", arpModeLabels},
+	"arp_octaves": {"arp", "Октавы", "", nil},
+	"arp_rate":    {"arp", "Скорость", "", arpRateLabels},
+	"arp_hold":    {"arp", "Hold", "", nil},
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
 	"test_tone_hz": {"debug", "Частота тона", "Гц", nil},
