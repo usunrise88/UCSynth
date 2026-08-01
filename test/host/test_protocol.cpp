@@ -4,12 +4,14 @@
 #include "control.h"
 #include "protocol.h"
 #include "frame.h"
+#include "preset.h"
 
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <cmath>
 #include <vector>
+#include <map>
 #include <initializer_list>
 
 static int g_fail = 0;
@@ -27,12 +29,61 @@ static uint32_t u32(const uint8_t *p) {
 static float f32(const uint8_t *p) { uint32_t v = u32(p); float f; std::memcpy(&f, &v, 4); return f; }
 
 // Прогнать тело запроса (список int → байты, без narrowing) через диспетчер.
-static Sink run(std::initializer_list<int> bytes, const sys_stats_t *st = nullptr) {
+static Sink run(std::initializer_list<int> bytes, const sys_stats_t *st = nullptr,
+                const preset_backend_t *pb = nullptr) {
     std::vector<uint8_t> body;
     for (int b : bytes) body.push_back((uint8_t)b);
     Sink s;
-    comm_handle_request(body.data(), body.size(), st, sink_emit, &s);
+    comm_handle_request(body.data(), body.size(), st, pb, sink_emit, &s);
     return s;
+}
+
+// In-memory preset backend: настоящий кодек (preset_serialize/apply/read_path), «NVS» = map slot→blob.
+// Тестирует фрейминг preset-опкодов в диспетчере, не таща NVS в host-сборку.
+struct FakeStore { std::map<uint16_t, std::vector<uint8_t>> blobs; uint16_t next = 0; };
+static int fake_save(void *ctx, uint16_t slot, const char *path, uint16_t *out) {
+    auto *s = static_cast<FakeStore *>(ctx);
+    const uint16_t use = (slot == PRESET_SLOT_NEW) ? s->next++ : slot;
+    uint8_t blob[PRESET_BLOB_MAX];
+    const size_t len = preset_serialize(blob, sizeof(blob), path);
+    if (!len) return ERR_STORAGE;
+    s->blobs[use].assign(blob, blob + len);
+    if (out) *out = use;
+    return 0;
+}
+static int fake_load(void *ctx, uint16_t slot) {
+    auto *s = static_cast<FakeStore *>(ctx);
+    auto it = s->blobs.find(slot);
+    if (it == s->blobs.end()) return ERR_NO_PRESET;
+    return preset_apply(it->second.data(), it->second.size()) ? 0 : ERR_STORAGE;
+}
+static int fake_del(void *ctx, uint16_t slot) {
+    return static_cast<FakeStore *>(ctx)->blobs.erase(slot) ? 0 : ERR_NO_PRESET;
+}
+static int fake_rename(void *ctx, uint16_t slot, const char *path) {
+    auto *s = static_cast<FakeStore *>(ctx);
+    auto it = s->blobs.find(slot);
+    if (it == s->blobs.end()) return ERR_NO_PRESET;
+    auto &old = it->second;
+    if (old.size() < 2 || (size_t)2 + old[1] > old.size()) return ERR_STORAGE;
+    const size_t toff = (size_t)2 + old[1];
+    std::vector<uint8_t> nb;
+    nb.push_back(old[0]);
+    const size_t np = std::strlen(path);
+    nb.push_back((uint8_t)np);
+    nb.insert(nb.end(), path, path + np);
+    nb.insert(nb.end(), old.begin() + toff, old.end());
+    old.swap(nb);
+    return 0;
+}
+static int fake_list(void *ctx, preset_list_emit_fn emit, void *ectx) {
+    auto *s = static_cast<FakeStore *>(ctx);
+    int n = 0;
+    for (auto &kv : s->blobs) {
+        char path[PRESET_PATH_MAX + 1];
+        if (preset_read_path(kv.second.data(), kv.second.size(), path, sizeof(path))) { emit(ectx, kv.first, path); ++n; }
+    }
+    return n;
 }
 
 // float → 4 младших int-байта LE (для передачи в run()).
@@ -111,6 +162,65 @@ int main() {
     {
         auto s = run({ 0x77 });
         CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_UNKNOWN_CMD, "unknown -> ERR_UNKNOWN_CMD");
+    }
+
+    // --- пресеты: фрейминг опкодов через in-memory backend (кодек настоящий) ---
+    {
+        FakeStore store;
+        const preset_backend_t be{ fake_save, fake_load, fake_del, fake_rename, fake_list, &store };
+
+        // SAVE новый (slot=0xFFFF) путь "A/B" → RSP_PRESET_SAVED slot=0
+        set_param(PARAM_MASTER_VOLUME, 0.42f);
+        {
+            auto s = run({ CMD_PRESET_SAVE, 0xFF, 0xFF, 3, 'A', '/', 'B' }, nullptr, &be);
+            CHECK(s.frames.size() == 1 && s.frames[0][0] == RSP_PRESET_SAVED, "SAVE -> RSP_PRESET_SAVED");
+            CHECK(u16(&s.frames[0][1]) == 0, "первый слот = 0");
+        }
+        // LIST → RSP_PRESET(slot0,"A/B") + RSP_PRESET_END count=1
+        {
+            auto s = run({ CMD_PRESET_LIST }, nullptr, &be);
+            CHECK(s.frames.size() == 2, "LIST -> 1 пресет + END");
+            auto &p = s.frames[0];
+            CHECK(p[0] == RSP_PRESET && u16(&p[1]) == 0 && p[3] == 3 && std::memcmp(&p[4], "A/B", 3) == 0, "RSP_PRESET slot0 A/B");
+            auto &e = s.frames[1];
+            CHECK(e[0] == RSP_PRESET_END && u16(&e[1]) == 1, "PRESET_END count=1");
+        }
+        // LOAD slot0 после ухода реестра → значение восстановлено
+        set_param(PARAM_MASTER_VOLUME, 0.11f);
+        {
+            auto s = run({ CMD_PRESET_LOAD, 0x00, 0x00 }, nullptr, &be);
+            CHECK(s.frames[0][0] == RSP_ACK, "LOAD -> ACK");
+            CHECK(std::fabs(get_param(PARAM_MASTER_VOLUME) - 0.42f) < 1e-4f, "LOAD применил пресет");
+        }
+        // RENAME slot0 → "X/Y"
+        {
+            auto s = run({ CMD_PRESET_RENAME, 0x00, 0x00, 3, 'X', '/', 'Y' }, nullptr, &be);
+            CHECK(s.frames[0][0] == RSP_ACK, "RENAME -> ACK");
+            auto l = run({ CMD_PRESET_LIST }, nullptr, &be);
+            CHECK(l.frames[0][3] == 3 && std::memcmp(&l.frames[0][4], "X/Y", 3) == 0, "RENAME сменил путь");
+        }
+        // LOAD несуществующего слота → ERR_NO_PRESET
+        {
+            auto s = run({ CMD_PRESET_LOAD, 0x09, 0x00 }, nullptr, &be);
+            CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_NO_PRESET, "LOAD пустого -> ERR_NO_PRESET");
+        }
+        // DELETE slot0 → ACK, затем LIST пуст
+        {
+            auto s = run({ CMD_PRESET_DELETE, 0x00, 0x00 }, nullptr, &be);
+            CHECK(s.frames[0][0] == RSP_ACK, "DELETE -> ACK");
+            auto l = run({ CMD_PRESET_LIST }, nullptr, &be);
+            CHECK(l.frames.size() == 1 && l.frames[0][0] == RSP_PRESET_END && u16(&l.frames[0][1]) == 0, "после DELETE LIST пуст");
+        }
+        // preset-опкод без backend (pb=nullptr) → ERR_UNKNOWN_CMD
+        {
+            auto s = run({ CMD_PRESET_LIST });
+            CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_UNKNOWN_CMD, "preset без backend -> ERR_UNKNOWN_CMD");
+        }
+        // SAVE с усечённым телом (path_len=5, а байтов пути 2) → ERR_BAD_LEN
+        {
+            auto s = run({ CMD_PRESET_SAVE, 0x00, 0x00, 5, 'A', 'B' }, nullptr, &be);
+            CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_BAD_LEN, "SAVE усечённый путь -> ERR_BAD_LEN");
+        }
     }
 
     // --- id ↔ строка реестра ---

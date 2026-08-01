@@ -9,10 +9,12 @@ OUT="$(mktemp -d)/ptest"
 g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/control/include" \
     -I "$ROOT/components/comm/include" \
+    -I "$ROOT/components/preset/include" \
     "$ROOT/test/host/test_protocol.cpp" \
     "$ROOT/components/control/src/control.cpp" \
     "$ROOT/components/comm/src/protocol.cpp" \
     "$ROOT/components/comm/src/frame.cpp" \
+    "$ROOT/components/preset/src/preset_codec.cpp" \
     -o "$OUT"
 
 "$OUT"
@@ -158,3 +160,15 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT14"
 
 "$OUT14"
+
+# Тест preset (этап 6 — кодек пресетов: round-trip, путь, сброс-в-дефолт, транзиентные, гарды).
+OUT15="$(mktemp -d)/presettest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/control/include" \
+    -I "$ROOT/components/preset/include" \
+    "$ROOT/test/host/test_preset.cpp" \
+    "$ROOT/components/preset/src/preset_codec.cpp" \
+    "$ROOT/components/control/src/control.cpp" \
+    -o "$OUT15"
+
+"$OUT15"

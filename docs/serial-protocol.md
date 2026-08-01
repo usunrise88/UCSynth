@@ -31,25 +31,33 @@
 
 ### ПК → МК (запросы)
 
-| CMD  | Имя      | Аргументы             |
-|------|----------|-----------------------|
-| 0x01 | SET      | `id:u16` `val:f32`    |
-| 0x02 | GET      | `id:u16`              |
-| 0x03 | LIST     | —                     |
-| 0x04 | NOTE_ON  | `note:u8` `vel:u8`    |
-| 0x05 | NOTE_OFF | `note:u8`             |
-| 0x06 | STAT     | —                     |
+| CMD  | Имя           | Аргументы                                   |
+|------|---------------|---------------------------------------------|
+| 0x01 | SET           | `id:u16` `val:f32`                          |
+| 0x02 | GET           | `id:u16`                                    |
+| 0x03 | LIST          | —                                           |
+| 0x04 | NOTE_ON       | `note:u8` `vel:u8`                          |
+| 0x05 | NOTE_OFF      | `note:u8`                                   |
+| 0x06 | STAT          | —                                           |
+| 0x07 | PRESET_LIST   | —                                           |
+| 0x08 | PRESET_SAVE   | `slot:u16` (`0xFFFF`=новый) `path_len:u8` `path` |
+| 0x09 | PRESET_LOAD   | `slot:u16`                                  |
+| 0x0A | PRESET_DELETE | `slot:u16`                                  |
+| 0x0B | PRESET_RENAME | `slot:u16` `path_len:u8` `path`             |
 
 ### МК → ПК (ответы)
 
-| RSP  | Имя     | Аргументы                                                                    |
-|------|---------|------------------------------------------------------------------------------|
-| 0x80 | ACK     | — (ответ на NOTE_ON/OFF)                                                      |
-| 0x81 | VALUE   | `id:u16` `val:f32` (ответ на GET и SET — значение после клампа)               |
-| 0x82 | PARAM   | `id:u16` `type:u8` `min:f32` `max:f32` `def:f32` `cur:f32` `namelen:u8` `name` |
-| 0x83 | LISTEND | `count:u16`                                                                  |
-| 0x86 | STAT    | `heap:u32` `minheap:u32` `uptime_ms:u32` `cpu_permille:u32` `underruns:u32`    |
-| 0xFF | ERR     | `code:u8`                                                                     |
+| RSP  | Имя          | Аргументы                                                                    |
+|------|--------------|------------------------------------------------------------------------------|
+| 0x80 | ACK          | — (ответ на NOTE_ON/OFF, PRESET_LOAD/DELETE/RENAME)                           |
+| 0x81 | VALUE        | `id:u16` `val:f32` (ответ на GET и SET — значение после клампа)               |
+| 0x82 | PARAM        | `id:u16` `type:u8` `min:f32` `max:f32` `def:f32` `cur:f32` `namelen:u8` `name` |
+| 0x83 | LISTEND      | `count:u16`                                                                  |
+| 0x84 | PRESET       | `slot:u16` `path_len:u8` `path` (по одному на пресет в ответ на PRESET_LIST)  |
+| 0x85 | PRESET_END   | `count:u16`                                                                  |
+| 0x86 | STAT         | `heap:u32` `minheap:u32` `uptime_ms:u32` `cpu_permille:u32` `underruns:u32`    |
+| 0x87 | PRESET_SAVED | `slot:u16` (назначенный слот, в ответ на PRESET_SAVE)                         |
+| 0xFF | ERR          | `code:u8`                                                                     |
 
 `LIST` → серия `PARAM` (по одному на параметр) + завершающий `LISTEND`.
 
@@ -60,7 +68,14 @@
 `NOTE_OFF note` гасит её. Реальную высоту дают ноты; отладочный тон включается параметром
 `test_tone` (bool, деф. 1 — звучит с загрузки, перебивает ноты; `SET test_tone 0` → играют ноты).
 
-**Коды ошибок** (`ERR`): `1` неизвестная команда, `2` неверный id, `3` неверная длина тела.
+**Пресеты (этап 6):** хранятся на устройстве в NVS, дерево — из путей `Папка/Имя`. `PRESET_SAVE`
+снимает текущий реестр в слот (`slot=0xFFFF` → выделить новый; ответ `PRESET_SAVED` несёт назначенный
+слот). `PRESET_LOAD` применяет пресет к реестру — GUI обновляет свой кэш обычным `LIST` (в `PARAM`
+приходит `cur`). `PRESET_LIST` → серия `PRESET` + завершающий `PRESET_END count`. Отладочный `test_tone`
+в снимок не входит и загрузкой не дёргается. Путь — до 96 байт.
+
+**Коды ошибок** (`ERR`): `1` неизвестная команда, `2` неверный id, `3` неверная длина тела,
+`4` пресет не найден (пустой слот), `5` сбой хранилища (NVS).
 
 ## Пример (кадры целиком, hex)
 
@@ -80,7 +95,8 @@ LIST:           55 AA 01 03 5D 1E
   ← ... PARAM #4..#33  (голос 3.1–3.6: ADSR, осц, фильтр, lo-fi, полифония, glide) ...
   ← ... PARAM #34..#63 (этап 4: LFO×2, mod-wheel, 8 слотов мод-матрицы, wave-огибающая) ...
   ← ... PARAM #64..#85 (этап 5: overdrive, delay, reverb) — все см. control.h ...
-  ← LISTEND:    55 AA 03 83 5600 D9 0F                        (count = 86 = 0x56)
+  ← ... PARAM #86..#87 (этап 6: reverb_moddepth, reverb_modrate — модуляция гребёнок) ...
+  ← LISTEND:    55 AA 03 83 5800 00 FA                        (count = 88 = 0x58)
 
 GET master_volume (id 0):   55 AA 03 02 0000 7C 71
   ← VALUE 0.8:              55 AA 07 81 0000 CDCC4C3F 17 B3
@@ -109,7 +125,7 @@ python tools/serialtest.py COM8      # порт нативного USB S3 (не 
 полифония/glide), модуляцию (4.1 LFO→cutoff/pitch через матрицу, 4.2 wave-огибающая/морф) и
 эффекты (5.1 overdrive, 5.2 delay, 5.3 reverb).
 
-Ожидаемо: список из **86** параметров (реестр строится динамически — новые параметры GUI/скрипт
+Ожидаемо: список из **88** параметров (реестр строится динамически — новые параметры GUI/скрипт
 подхватывают через LIST без правок; число сверяется с `PARAM_COUNT` в `control.h`), STAT
 показывает heap/uptime + `cpu_permille` (‰ бюджета аудио-блока) и `underruns`, ноты меняют высоту,
 высокие ноты звучат чисто (band-limit), демо слышно по секциям. Строки `ESP_LOG` в потоке — норма,
