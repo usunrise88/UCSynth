@@ -170,7 +170,8 @@ static void audio_task(void *arg)
             (int)get_param(PARAM_SEQ_BPM), get_param(PARAM_SEQ_SWING),
             get_param(PARAM_SEQ_PLAYING) > 0.5f, get_param(PARAM_SEQ_ON) > 0.5f,
         };
-        seq_tick(&s_seq, &scfg, (float)SAMPLE_RATE, BLOCK_FRAMES);
+        SeqNoteEvent seq_ev[16];
+        const int seq_nev = seq_tick(&s_seq, &scfg, (float)SAMPLE_RATE, BLOCK_FRAMES, seq_ev, 16);
 
         // Параметры синта — до дренажа (нужны аллокатору при note-on: poly/legato/glide).
         SynthParams sp;
@@ -183,6 +184,13 @@ static void audio_task(void *arg)
                                                   (uint8_t)get_param(PARAM_LFO1_SHAPE));
         sp.voice.mod_src[MOD_SRC_LFO2] = lfo_tick(&lfo[1], get_param(PARAM_LFO2_RATE), lfo_dt,
                                                   (uint8_t)get_param(PARAM_LFO2_SHAPE));
+
+        // Ноты секвенсора/арпа (этап 7): fire ПОСЛЕ сборки sp (p-lock шага уже в sp через pr()) — голос
+        // аллоцируется с параметрами этого шага. Идут в тот же synth, что и клавиши/MIDI.
+        for (int i = 0; i < seq_nev; ++i) {
+            if (seq_ev[i].on) synth_note_on(&sp, seq_ev[i].note, seq_ev[i].vel);
+            else              synth_note_off(&sp, seq_ev[i].note);
+        }
 
         // Дренаж нотной очереди → синт (аллокация голосов / стек нот — внутри synth).
         NoteEvent ev;
