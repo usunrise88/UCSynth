@@ -14,33 +14,46 @@ func TestCRCCheckValue(t *testing.T) {
 	}
 }
 
-// Golden frames from docs/serial-protocol.md.
+// Golden frames — FULL literal bytes including the two CRC bytes, mirroring the hex tables in
+// docs/serial-protocol.md and the identical set in test/host/test_protocol.cpp. This is the real
+// cross-anchor T-007 asked for: the CRC bytes here are hardcoded literals computed by an
+// independent reference (not recomputed by CRC16), so a change that flips CRC coverage
+// (LEN+BODY→BODY), CRC byte order, or a field layout fails HERE even though the Go encoder and its
+// own CRC16 would still agree with each other. Keep these three sources byte-identical.
+//
+// If a genuine protocol change lands, update all three (doc + both tests) together — that edit is
+// the point where the wire contract is deliberately re-agreed.
 func TestEncodeGoldenFrames(t *testing.T) {
 	cases := []struct {
 		name string
 		got  []byte
-		// prefix = everything except the trailing 2 CRC bytes (which we recompute+verify)
-		prefix []byte
+		want []byte // complete frame: sync(2) + LEN + BODY + CRC_LE(2)
 	}{
-		{"LIST", ListFrame(), []byte{0x55, 0xAA, 0x01, 0x03}},
-		{"GET id0", GetFrame(0), []byte{0x55, 0xAA, 0x03, 0x02, 0x00, 0x00}},
-		{"SET id0=0.5", SetFrame(0, 0.5), []byte{0x55, 0xAA, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F}},
-		{"STAT", StatFrame(), []byte{0x55, 0xAA, 0x01, 0x06}},
+		{"LIST", ListFrame(), []byte{0x55, 0xAA, 0x01, 0x03, 0x5D, 0x1E}},
+		{"GET id0", GetFrame(0), []byte{0x55, 0xAA, 0x03, 0x02, 0x00, 0x00, 0x7C, 0x71}},
+		{"SET id0=0.5", SetFrame(0, 0.5), []byte{0x55, 0xAA, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0xFB, 0x89}},
+		{"STAT", StatFrame(), []byte{0x55, 0xAA, 0x01, 0x06, 0xF8, 0x4E}},
+		{"NOTE_ON 60,100", NoteOnFrame(60, 100), []byte{0x55, 0xAA, 0x03, 0x04, 0x3C, 0x64, 0x06, 0xAF}},
+		{"NOTE_OFF 60", NoteOffFrame(60), []byte{0x55, 0xAA, 0x02, 0x05, 0x3C, 0xD6, 0xAA}},
+		{"VALUE 0.8", ValueRespFrame(0, 0.8), []byte{0x55, 0xAA, 0x07, 0x81, 0x00, 0x00, 0xCD, 0xCC, 0x4C, 0x3F, 0x17, 0xB3}},
+		{"empty body", EncodeFrame(nil), []byte{0x55, 0xAA, 0x00, 0xF0, 0xE1}},
 	}
 	for _, c := range cases {
-		if len(c.got) != len(c.prefix)+2 {
-			t.Errorf("%s: frame len %d, want %d", c.name, len(c.got), len(c.prefix)+2)
+		// Encoder must produce the exact bytes, CRC included.
+		if !bytes.Equal(c.got, c.want) {
+			t.Errorf("%s: encoded % X, want % X", c.name, c.got, c.want)
+		}
+		// And our decoder must accept the literal golden bytes and recover the body — proves the
+		// CRC these literals carry is the one our decoder validates against.
+		d := NewDecoder()
+		bodies := d.Push(append([]byte(nil), c.want...))
+		if len(bodies) != 1 {
+			t.Errorf("%s: golden frame decoded into %d bodies, want 1", c.name, len(bodies))
 			continue
 		}
-		if !bytes.Equal(c.got[:len(c.prefix)], c.prefix) {
-			t.Errorf("%s: prefix % X, want % X", c.name, c.got[:len(c.prefix)], c.prefix)
-		}
-		// CRC covers head = LEN+BODY = bytes [2 : len-2]
-		head := c.got[2 : len(c.got)-2]
-		wantCRC := CRC16(head)
-		gotCRC := binary.LittleEndian.Uint16(c.got[len(c.got)-2:])
-		if gotCRC != wantCRC {
-			t.Errorf("%s: CRC 0x%04X, want 0x%04X", c.name, gotCRC, wantCRC)
+		wantBody := c.want[3 : len(c.want)-2]
+		if !bytes.Equal(bodies[0], wantBody) {
+			t.Errorf("%s: decoded body % X, want % X", c.name, bodies[0], wantBody)
 		}
 	}
 }

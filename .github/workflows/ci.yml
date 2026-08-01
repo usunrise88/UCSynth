@@ -1,0 +1,41 @@
+# Сетка безопасности: прогон обоих наборов тестов на каждый PR и push в main.
+# Закрывает T-008/B-64 (раньше тесты гонялись только руками → регресс в реестре/протоколе/DSP
+# уходил в main незамеченным и всплывал на железе).
+#
+# Прошивку (idf.py build) здесь НЕ собираем: клон ESP-IDF v6.0.2 долгий и тяжёлый, а чистая
+# логика (реестр, протокол, кадрирование, весь DSP) host-тестируема обычным g++ — этого хватает.
+# Сборку прошивки пользователь проверяет локально (у него и железо).
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Новый push в ту же ветку/PR отменяет ещё бегущий прогон — не копим очередь.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host:
+    name: host (g++ — реестр/протокол/DSP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run-host-tests.sh
+        run: bash tools/run-host-tests.sh
+
+  app:
+    name: app (Go — GUI-логика + кросс-сборка Windows)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Версия — из app/go.mod, чтобы CI и локальная сборка не разъехались (та же логика,
+          # что в tools/setup-go.sh). go.sum там же → кэш модулей по нему.
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - name: run-app-tests.sh
+        run: bash tools/run-app-tests.sh

@@ -168,6 +168,54 @@ int main() {
     CHECK(frame_crc16(reinterpret_cast<const uint8_t *>("123456789"), 9) == 0x29B1,
           "CRC check value = 0x29B1");
 
+    // --- golden-кадры: ПОЛНЫЕ литеральные байты с CRC ---
+    // Зеркало таблиц из docs/serial-protocol.md и того же набора в app/proto/proto_test.go
+    // (TestEncodeGoldenFrames). Это и есть настоящий кросс-якорь (T-007): байты CRC ниже —
+    // жёстко зашитые литералы, посчитанные независимой ссылкой, а НЕ выводом frame_crc16. Поэтому
+    // смена покрытия CRC (LEN+BODY→BODY), порядка байт CRC или раскладки полей ловится ЗДЕСЬ —
+    // хотя frame_encode и его собственный frame_crc16 остались бы согласованы между собой.
+    // Три источника (док + оба теста) держим байт-в-байт одинаковыми; настоящая смена протокола —
+    // это правка всех трёх разом (точка, где контракт провода осознанно переподписывается).
+    {
+        struct Golden { const char *name; std::vector<uint8_t> body; std::vector<uint8_t> frame; };
+        const std::vector<Golden> golden = {
+            { "LIST",           { 0x03 },
+              { 0x55, 0xAA, 0x01, 0x03, 0x5D, 0x1E } },
+            { "GET id0",        { 0x02, 0x00, 0x00 },
+              { 0x55, 0xAA, 0x03, 0x02, 0x00, 0x00, 0x7C, 0x71 } },
+            { "SET id0=0.5",    { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F },
+              { 0x55, 0xAA, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0xFB, 0x89 } },
+            { "STAT",           { 0x06 },
+              { 0x55, 0xAA, 0x01, 0x06, 0xF8, 0x4E } },
+            { "NOTE_ON 60,100", { 0x04, 0x3C, 0x64 },
+              { 0x55, 0xAA, 0x03, 0x04, 0x3C, 0x64, 0x06, 0xAF } },
+            { "NOTE_OFF 60",    { 0x05, 0x3C },
+              { 0x55, 0xAA, 0x02, 0x05, 0x3C, 0xD6, 0xAA } },
+            { "VALUE 0.8",      { 0x81, 0x00, 0x00, 0xCD, 0xCC, 0x4C, 0x3F },
+              { 0x55, 0xAA, 0x07, 0x81, 0x00, 0x00, 0xCD, 0xCC, 0x4C, 0x3F, 0x17, 0xB3 } },
+            { "empty body",     {},
+              { 0x55, 0xAA, 0x00, 0xF0, 0xE1 } },
+        };
+        for (const auto &g : golden) {
+            // Энкодер должен выдать ровно эти байты, включая CRC.
+            uint8_t out[FRAME_MAX_SIZE];
+            const size_t n = frame_encode(g.body.data(), g.body.size(), out, sizeof(out));
+            bool enc_ok = (n == g.frame.size()) &&
+                          std::memcmp(out, g.frame.data(), n) == 0;
+            CHECK(enc_ok, g.name);
+
+            // И декодер должен принять литеральные байты и вернуть точно то же тело — значит CRC,
+            // который несут эти литералы, ровно тот, что проверяет наш декодер.
+            frame_decoder_t d; frame_decoder_init(&d);
+            const uint8_t *dbody = nullptr; size_t dlen = 0; bool got = false;
+            for (uint8_t b : g.frame)
+                if (frame_decoder_push(&d, b, &dbody, &dlen)) got = true;
+            bool dec_ok = got && dlen == g.body.size() &&
+                          (g.body.empty() || std::memcmp(dbody, g.body.data(), dlen) == 0);
+            CHECK(dec_ok, g.name);
+        }
+    }
+
     // --- кадр: encode -> decode round-trip ---
     {
         const uint8_t body[] = { CMD_SET, 0x01, 0x00, 0xAA, 0xBB, 0xCC, 0xDD };

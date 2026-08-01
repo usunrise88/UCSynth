@@ -64,8 +64,15 @@
 
 ## Пример (кадры целиком, hex)
 
+CRC-байты ниже — **реальные** (little-endian: младший байт первым), не заглушки, там где тело кадра
+полностью определено. Эти же кадры зашиты литералами и сверяются байт-в-байт в обоих наборах тестов
+(`app/proto/proto_test.go` → `TestEncodeGoldenFrames`, `test/host/test_protocol.cpp` → golden-блок) —
+это кросс-якорь: любое расхождение реализации со спекой валит тест. Меняешь протокол — правь **все три**
+(этот файл + оба теста) разом. У кадров с переменным телом (`PARAM` с min/max/def/cur, `STAT` с
+живыми метриками) CRC зависит от содержимого — оставлены `<crc>`.
+
 ```
-LIST:           55 AA 01 03 <crc>
+LIST:           55 AA 01 03 5D 1E
   ← PARAM #0:   55 AA 22 82 0000 00 <min f32> <max f32> <def f32> <cur f32> 0D "master_volume" <crc>
   ← PARAM #1:   55 AA 21 82 0100 00 ... 0C "test_tone_hz" <crc>
   ← PARAM #2:   55 AA 1D 82 0200 02 ... 08 "waveform" <crc>   (type 02 = enum, 0..3)
@@ -73,16 +80,20 @@ LIST:           55 AA 01 03 <crc>
   ← ... PARAM #4..#33  (голос 3.1–3.6: ADSR, осц, фильтр, lo-fi, полифония, glide) ...
   ← ... PARAM #34..#63 (этап 4: LFO×2, mod-wheel, 8 слотов мод-матрицы, wave-огибающая) ...
   ← ... PARAM #64..#85 (этап 5: overdrive, delay, reverb) — все см. control.h ...
-  ← LISTEND:    55 AA 03 83 5600 <crc>                        (count = 86 = 0x56)
+  ← LISTEND:    55 AA 03 83 5600 D9 0F                        (count = 86 = 0x56)
 
-GET master_volume (id 0):   55 AA 03 02 0000 <crc>
-  ← VALUE 0.8:              55 AA 07 81 0000 CDCC4C3F <crc>
+GET master_volume (id 0):   55 AA 03 02 0000 7C 71
+  ← VALUE 0.8:              55 AA 07 81 0000 CDCC4C3F 17 B3
 
-SET master_volume = 0.5:    55 AA 07 01 0000 0000003F <crc>
-  ← VALUE 0.5:              55 AA 07 81 0000 0000003F <crc>
+SET master_volume = 0.5:    55 AA 07 01 0000 0000003F FB 89
+  ← VALUE 0.5:              55 AA 07 81 0000 0000003F 02 22
 
-STAT:                       55 AA 01 06 <crc>
+STAT:                       55 AA 01 06 F8 4E
   ← STAT:                   55 AA 15 86 <heap u32> <min u32> <uptime u32> <cpu u32> <underruns u32> <crc>
+
+NOTE_ON 60 vel 100:         55 AA 03 04 3C64 06 AF
+NOTE_OFF 60:                55 AA 02 05 3C D6 AA
+кадр без тела (LEN=0):      55 AA 00 F0 E1
 ```
 
 ## Проверка на железе
