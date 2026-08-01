@@ -127,6 +127,9 @@ typedef enum {
     PARAM_REVERB_DAMP    = 83, // затухание ВЧ 0..1
     PARAM_REVERB_WIDTH   = 84, // стерео-ширина 0..1
     PARAM_REVERB_MIX     = 85, // wet/dry 0..1
+    // --- этап 6: модуляция длины гребёнок реверба (против металлического звона) ---
+    PARAM_REVERB_MODDEPTH = 86, // глубина модуляции гребёнок 0..1 (0 = выкл, звон как есть)
+    PARAM_REVERB_MODRATE  = 87, // скорость модуляции, Гц
     PARAM_COUNT
 } param_id_t;
 

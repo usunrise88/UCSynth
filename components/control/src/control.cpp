@@ -126,6 +126,9 @@ constexpr ParamDef kParams[] = {
     { PARAM_REVERB_DAMP,    "reverb_damp",    PARAM_TYPE_FLOAT,   0.0f,     1.0f,     0.5f },
     { PARAM_REVERB_WIDTH,   "reverb_width",   PARAM_TYPE_FLOAT,   0.0f,     1.0f,     1.0f },
     { PARAM_REVERB_MIX,     "reverb_mix",     PARAM_TYPE_FLOAT,   0.0f,     1.0f,    0.25f },
+    // этап 6 — модуляция длины гребёнок реверба (дефолт depth=0 → сегодняшний звук)
+    { PARAM_REVERB_MODDEPTH,"reverb_moddepth",PARAM_TYPE_FLOAT,   0.0f,     1.0f,     0.0f },
+    { PARAM_REVERB_MODRATE, "reverb_modrate", PARAM_TYPE_FLOAT,   0.05f,    5.0f,     0.7f },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

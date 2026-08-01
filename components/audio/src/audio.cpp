@@ -119,6 +119,8 @@ static void build_synth_params(SynthParams *sp)
     sp->fx.reverb_damp    = get_param(PARAM_REVERB_DAMP);
     sp->fx.reverb_width   = get_param(PARAM_REVERB_WIDTH);
     sp->fx.reverb_mix     = get_param(PARAM_REVERB_MIX);
+    sp->fx.reverb_moddepth = get_param(PARAM_REVERB_MODDEPTH);
+    sp->fx.reverb_modrate  = get_param(PARAM_REVERB_MODRATE);
 }
 
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока

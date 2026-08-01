@@ -91,11 +91,35 @@ constexpr float RV_INGAIN      = 0.035f;
 constexpr float RV_ROOM_SCALE  = 0.28f;    // size → feedback ∈ [0.7, 0.98]
 constexpr float RV_ROOM_OFFSET = 0.7f;
 constexpr float RV_DAMP_SCALE  = 0.4f;     // damp → damp1 ∈ [0, 0.4]
+// --- модуляция длины гребёнок (этап 6, против металлического звона Freeverb) ---
+constexpr float RV_SR              = 48000.0f;  // тюнинг реверба уже 48к-специфичен → тот же SR для LFO
+constexpr float RV_MOD_MAX_SAMPLES = 32.0f;     // δ при moddepth=1 (сдвиг тапа чтения гребёнки, сэмплы)
+// Разные скорости на гребёнку → моды разъезжаются независимо (не синхронный вобл всей комнаты).
+const float RV_MOD_RATE_FACTOR[RV_NCOMB] = {1.00f, 1.17f, 0.84f, 1.29f, 0.76f, 1.41f, 0.68f, 1.53f};
 
 inline float comb_tick(Comb &c, float in, float fb, float damp) {
     const float out = c.buf[c.idx];
     c.store = out * (1.0f - damp) + c.store * damp;      // one-pole LP в цепи ОС
     if (fabsf(c.store) < 1e-20f) c.store = 0.0f;         // денормал-флаш
+    c.buf[c.idx] = in + c.store * fb;
+    if (++c.idx >= c.len) c.idx = 0;
+    return out;
+}
+// Гребёнка с модулированной длиной: пишем в idx (задержка len), но читаем дробную позицию idx+δ «впереди»
+// курсора → эффективная задержка len-δ, гуляющая по медленному LFO. δ∈[0,depth_s], читаем ВНУТРИ буфера
+// (не за len) → лишний headroom не нужен. δ=0,frac=0 → out=buf[idx] бит-в-бит как comb_tick.
+inline float comb_tick_mod(Comb &c, float in, float fb, float damp, float ph_inc, float depth_s) {
+    c.mod_phase += ph_inc;
+    if (c.mod_phase >= 1.0f) c.mod_phase -= 1.0f;
+    const float tri   = 1.0f - 4.0f * fabsf(c.mod_phase - 0.5f);   // треугольник /\ [-1,1] (дёшево, без sinf)
+    const float delta = depth_s * 0.5f * (1.0f + tri);            // δ ∈ [0, depth_s]
+    const int   i0    = (int)delta;
+    const float frac  = delta - (float)i0;
+    int ra = c.idx + i0; if (ra >= c.len) ra -= c.len;            // i0 ≤ depth_s ≪ len → один вычет хватает
+    int rb = ra + 1;     if (rb >= c.len) rb -= c.len;
+    const float out = c.buf[ra] + (c.buf[rb] - c.buf[ra]) * frac; // линейная интерполяция дробного тапа
+    c.store = out * (1.0f - damp) + c.store * damp;               // ОС не меняется (пишем в idx)
+    if (fabsf(c.store) < 1e-20f) c.store = 0.0f;
     c.buf[c.idx] = in + c.store * fb;
     if (++c.idx >= c.len) c.idx = 0;
     return out;
@@ -120,8 +144,8 @@ int fx_reverb_bufsize()
 
 void fx_reverb_init(FxState *fx, float *buf, int nsamples)
 {
-    for (int i = 0; i < RV_NCOMB; ++i) { fx->rv_combL[i] = {nullptr, 0, 0, 0.0f}; fx->rv_combR[i] = {nullptr, 0, 0, 0.0f}; }
-    for (int i = 0; i < RV_NAP; ++i)   { fx->rv_apL[i]   = {nullptr, 0, 0};       fx->rv_apR[i]   = {nullptr, 0, 0}; }
+    for (int i = 0; i < RV_NCOMB; ++i) { fx->rv_combL[i] = {nullptr, 0, 0, 0.0f, 0.0f}; fx->rv_combR[i] = {nullptr, 0, 0, 0.0f, 0.0f}; }
+    for (int i = 0; i < RV_NAP; ++i)   { fx->rv_apL[i]   = {nullptr, 0, 0};             fx->rv_apR[i]   = {nullptr, 0, 0}; }
     fx->rv_was_on = false;
     if (!buf || nsamples < fx_reverb_bufsize()) return;   // нет/мал буфер → реверб отключён
 
@@ -129,8 +153,10 @@ void fx_reverb_init(FxState *fx, float *buf, int nsamples)
     int off = 0;
     auto slice = [&](int n) -> float * { float *p = buf + off; off += n; return p; };
     for (int i = 0; i < RV_NCOMB; ++i) {
-        fx->rv_combL[i] = { slice(RV_COMB_LEN[i]),              RV_COMB_LEN[i],              0, 0.0f };
-        fx->rv_combR[i] = { slice(RV_COMB_LEN[i] + RV_SPREAD), RV_COMB_LEN[i] + RV_SPREAD, 0, 0.0f };
+        float phL = (float)i * 0.61803399f; phL -= (float)(int)phL;   // золотое сечение → равномерный разброс фаз
+        float phR = phL + 0.5f; if (phR >= 1.0f) phR -= 1.0f;         // R сдвинут на полфазы → стерео-декорреляция
+        fx->rv_combL[i] = { slice(RV_COMB_LEN[i]),              RV_COMB_LEN[i],              0, 0.0f, phL };
+        fx->rv_combR[i] = { slice(RV_COMB_LEN[i] + RV_SPREAD), RV_COMB_LEN[i] + RV_SPREAD, 0, 0.0f, phR };
     }
     for (int i = 0; i < RV_NAP; ++i) {
         fx->rv_apL[i] = { slice(RV_AP_LEN[i]),              RV_AP_LEN[i],              0 };
@@ -165,15 +191,27 @@ void AUDIO_HOT fx_reverb(FxState *fx, const FxParams *p, float *l, float *r, int
     const float mix    = p->reverb_mix;
     const float ingain = (1.0f - fb) * RV_INGAIN;   // компенсация усиления гребёнок 1/(1-fb) → уровень wet
                                                     //   ~ независим от size (иначе большая комната = очень громко)
+    // Модуляция длины гребёнок: depth=0 (дефолт) → быстрый путь без изменений (0 CPU, звук как есть).
+    const bool  mod     = (p->reverb_moddepth > 0.0f);
+    const float depth_s = p->reverb_moddepth * RV_MOD_MAX_SAMPLES;                 // δ-диапазон, сэмплы
+    const float ph_inc  = (p->reverb_modrate > 0.0f) ? p->reverb_modrate / RV_SR : 0.0f;  // фаза/сэмпл (базовая)
 
     for (int i = 0; i < n; ++i) {
         const float inL = l[i], inR = r[i];
         const float input = (inL + inR) * ingain;   // моно-вход в оба банка гребёнок (с fb-компенсацией)
 
         float outL = 0.0f, outR = 0.0f;
-        for (int k = 0; k < RV_NCOMB; ++k) {              // параллельные гребёнки
-            outL += comb_tick(fx->rv_combL[k], input, fb, damp);
-            outR += comb_tick(fx->rv_combR[k], input, fb, damp);
+        if (mod) {
+            for (int k = 0; k < RV_NCOMB; ++k) {          // гребёнки с модуляцией длины (разъезд по rate/фазе)
+                const float inc = ph_inc * RV_MOD_RATE_FACTOR[k];
+                outL += comb_tick_mod(fx->rv_combL[k], input, fb, damp, inc, depth_s);
+                outR += comb_tick_mod(fx->rv_combR[k], input, fb, damp, inc, depth_s);
+            }
+        } else {
+            for (int k = 0; k < RV_NCOMB; ++k) {          // параллельные гребёнки (без модуляции — как раньше)
+                outL += comb_tick(fx->rv_combL[k], input, fb, damp);
+                outR += comb_tick(fx->rv_combR[k], input, fb, damp);
+            }
         }
         for (int k = 0; k < RV_NAP; ++k) {                // последовательные allpass
             outL = allpass_tick(fx->rv_apL[k], outL);

@@ -133,6 +133,9 @@ var byName = map[string]Field{
 	"reverb_damp":  {"reverb", "Damp", "", nil},
 	"reverb_width": {"reverb", "Width", "", nil},
 	"reverb_mix":   {"reverb", "Mix", "", nil},
+	// этап 6 — модуляция длины гребёнок (против звона)
+	"reverb_moddepth": {"reverb", "Mod Depth", "", nil},
+	"reverb_modrate":  {"reverb", "Mod Rate", "Гц", nil},
 	// матрица (mtx1..8 × {src,dst,depth}) добавляется в init() ниже
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
