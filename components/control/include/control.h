@@ -130,6 +130,16 @@ typedef enum {
     // --- этап 6: модуляция длины гребёнок реверба (против металлического звона) ---
     PARAM_REVERB_MODDEPTH = 86, // глубина модуляции гребёнок 0..1 (0 = выкл, звон как есть)
     PARAM_REVERB_MODRATE  = 87, // скорость модуляции, Гц
+    // --- этап 7: секвенсор / арпеджиатор (общий темп-клок) ---
+    PARAM_SEQ_BPM      = 88, // темп, BPM (20..300)
+    PARAM_SEQ_SWING    = 89, // свинг 0..1 (сдвиг off-beat 16-х)
+    PARAM_SEQ_PLAYING  = 90, // транспорт play/stop (bool)
+    PARAM_SEQ_ON       = 91, // секвенсор вкл (bool)
+    PARAM_ARP_ON       = 92, // арпеджиатор вкл (bool)
+    PARAM_ARP_MODE     = 93, // режим арпа: 0 up / 1 down / 2 up-down / 3 random (enum)
+    PARAM_ARP_OCTAVES  = 94, // диапазон октав арпа (1..4)
+    PARAM_ARP_RATE     = 95, // деление клока: 0=1/4 1=1/8 2=1/16 3=1/32 (enum)
+    PARAM_ARP_HOLD     = 96, // арп hold/latch (bool)
     PARAM_COUNT
 } param_id_t;
 

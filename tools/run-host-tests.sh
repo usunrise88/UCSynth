@@ -172,3 +172,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT15"
 
 "$OUT15"
+
+# Тест seq (этап 7.1 — темп-клок секвенсора: длина шага/bpm, swing, транспорт, врап).
+OUT16="$(mktemp -d)/seqtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_seq.cpp" \
+    "$ROOT/components/audio/src/seq_engine.cpp" \
+    -o "$OUT16"
+
+"$OUT16"

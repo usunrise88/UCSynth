@@ -129,6 +129,16 @@ constexpr ParamDef kParams[] = {
     // этап 6 — модуляция длины гребёнок реверба (дефолт depth=0 → сегодняшний звук)
     { PARAM_REVERB_MODDEPTH,"reverb_moddepth",PARAM_TYPE_FLOAT,   0.0f,     1.0f,     0.0f },
     { PARAM_REVERB_MODRATE, "reverb_modrate", PARAM_TYPE_FLOAT,   0.05f,    5.0f,     0.7f },
+    // этап 7 — секвенсор / арпеджиатор (общий темп-клок)
+    { PARAM_SEQ_BPM,     "seq_bpm",     PARAM_TYPE_INT,    20.0f,  300.0f,  120.0f },
+    { PARAM_SEQ_SWING,   "seq_swing",   PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.0f },
+    { PARAM_SEQ_PLAYING, "seq_playing", PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    { PARAM_SEQ_ON,      "seq_on",      PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    { PARAM_ARP_ON,      "arp_on",      PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    { PARAM_ARP_MODE,    "arp_mode",    PARAM_TYPE_ENUM,    0.0f,    3.0f,    0.0f },
+    { PARAM_ARP_OCTAVES, "arp_octaves", PARAM_TYPE_INT,     1.0f,    4.0f,    1.0f },
+    { PARAM_ARP_RATE,    "arp_rate",    PARAM_TYPE_ENUM,    0.0f,    3.0f,    2.0f },
+    { PARAM_ARP_HOLD,    "arp_hold",    PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

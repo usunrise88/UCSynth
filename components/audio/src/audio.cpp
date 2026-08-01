@@ -11,6 +11,7 @@
 #include "synth.h"
 #include "lfo.h"
 #include "fx.h"
+#include "seq_engine.h"
 
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -66,61 +67,75 @@ struct NoteEvent {
 };
 static QueueHandle_t s_note_q = nullptr;
 
+// Секвенсор/арпеджиатор (этап 7): темп-клок + p-lock оверрайды. Живёт на Core 0 (тикается в audio_task,
+// читается pr() в build_synth_params — обе точки в одной задаче, без гонок).
+static SeqEngine s_seq;
+
+// Чтение параметра С УЧЁТОМ p-lock-оверрайда текущего шага (этап 7). Если шаг переопределяет параметр —
+// вернуть значение оверрайда (транзиентно, реестр не трогаем), иначе обычный get_param. В 7.1 оверрайдов
+// нет → эквивалент get_param.
+static inline float pr(uint16_t id)
+{
+    float v;
+    return seq_plock(&s_seq, id, &v) ? v : get_param(id);
+}
+
 // Собрать параметры синта из реестра (раз в блок, ~30 атомарных чтений — дёшево). DSP сам
-// control не трогает — вся связь control→DSP здесь.
+// control не трогает — вся связь control→DSP здесь. Чтения идут через pr() → p-lock шага применяется
+// прозрачно ко всем voice/fx-параметрам.
 static void build_synth_params(SynthParams *sp)
 {
     VoiceParams *vp = &sp->voice;
-    vp->osc[0] = { (uint8_t)get_param(PARAM_WAVEFORM),  get_param(PARAM_OSC1_DETUNE), get_param(PARAM_OSC1_LEVEL) };
-    vp->osc[1] = { (uint8_t)get_param(PARAM_OSC2_WAVE), get_param(PARAM_OSC2_DETUNE), get_param(PARAM_OSC2_LEVEL) };
-    vp->osc[2] = { (uint8_t)get_param(PARAM_OSC3_WAVE), get_param(PARAM_OSC3_DETUNE), get_param(PARAM_OSC3_LEVEL) };
-    vp->noise_level = get_param(PARAM_NOISE_LEVEL);
-    vp->ring_level  = get_param(PARAM_RING_LEVEL);
-    vp->cutoff_hz   = get_param(PARAM_CUTOFF);
-    vp->resonance   = get_param(PARAM_RESONANCE);
-    vp->filt_mode   = (uint8_t)get_param(PARAM_FILTER_MODE);
-    vp->flt_env_amt = get_param(PARAM_FLT_ENV_AMT);
-    vp->amp_env = { get_param(PARAM_AMP_ATTACK), get_param(PARAM_AMP_DECAY),
-                    get_param(PARAM_AMP_SUSTAIN), get_param(PARAM_AMP_RELEASE),
-                    get_param(PARAM_AMP_LOOP) > 0.5f };
-    vp->flt_env = { get_param(PARAM_FLT_ATTACK), get_param(PARAM_FLT_DECAY),
-                    get_param(PARAM_FLT_SUSTAIN), get_param(PARAM_FLT_RELEASE),
-                    get_param(PARAM_FLT_LOOP) > 0.5f };
-    vp->lofi       = get_param(PARAM_LOFI) > 0.5f;
-    vp->lofi_bits  = (int)get_param(PARAM_LOFI_BITS);
-    vp->latch      = get_param(PARAM_LATCH) > 0.5f;
-    vp->glide_time = get_param(PARAM_GLIDE_TIME);
+    vp->osc[0] = { (uint8_t)pr(PARAM_WAVEFORM),  pr(PARAM_OSC1_DETUNE), pr(PARAM_OSC1_LEVEL) };
+    vp->osc[1] = { (uint8_t)pr(PARAM_OSC2_WAVE), pr(PARAM_OSC2_DETUNE), pr(PARAM_OSC2_LEVEL) };
+    vp->osc[2] = { (uint8_t)pr(PARAM_OSC3_WAVE), pr(PARAM_OSC3_DETUNE), pr(PARAM_OSC3_LEVEL) };
+    vp->noise_level = pr(PARAM_NOISE_LEVEL);
+    vp->ring_level  = pr(PARAM_RING_LEVEL);
+    vp->cutoff_hz   = pr(PARAM_CUTOFF);
+    vp->resonance   = pr(PARAM_RESONANCE);
+    vp->filt_mode   = (uint8_t)pr(PARAM_FILTER_MODE);
+    vp->flt_env_amt = pr(PARAM_FLT_ENV_AMT);
+    vp->amp_env = { pr(PARAM_AMP_ATTACK), pr(PARAM_AMP_DECAY),
+                    pr(PARAM_AMP_SUSTAIN), pr(PARAM_AMP_RELEASE),
+                    pr(PARAM_AMP_LOOP) > 0.5f };
+    vp->flt_env = { pr(PARAM_FLT_ATTACK), pr(PARAM_FLT_DECAY),
+                    pr(PARAM_FLT_SUSTAIN), pr(PARAM_FLT_RELEASE),
+                    pr(PARAM_FLT_LOOP) > 0.5f };
+    vp->lofi       = pr(PARAM_LOFI) > 0.5f;
+    vp->lofi_bits  = (int)pr(PARAM_LOFI_BITS);
+    vp->latch      = pr(PARAM_LATCH) > 0.5f;
+    vp->glide_time = pr(PARAM_GLIDE_TIME);
     // этап 4.1 — мод-источники + матрица. Обнуляем все источники; глобальный mod-wheel ставим здесь,
     // LFO допишет audio_task после тика, пер-голосные (VCF-env, velocity) — сам голос в voice_render.
     for (int s = 0; s < MOD_SRC_COUNT; ++s) vp->mod_src[s] = 0.0f;
-    vp->mod_src[MOD_SRC_MODWHEEL] = get_param(PARAM_MOD_WHEEL);
+    vp->mod_src[MOD_SRC_MODWHEEL] = pr(PARAM_MOD_WHEEL);
     for (int s = 0; s < MOD_SLOTS; ++s) {
-        vp->mtx[s].src   = (uint8_t)get_param(PARAM_MTX1_SRC   + s * 3);
-        vp->mtx[s].dst   = (uint8_t)get_param(PARAM_MTX1_DST   + s * 3);
-        vp->mtx[s].depth = get_param(PARAM_MTX1_DEPTH + s * 3);
+        vp->mtx[s].src   = (uint8_t)pr(PARAM_MTX1_SRC   + s * 3);
+        vp->mtx[s].dst   = (uint8_t)pr(PARAM_MTX1_DST   + s * 3);
+        vp->mtx[s].depth = pr(PARAM_MTX1_DEPTH + s * 3);
     }
     // этап 4.2 — wave-огибающая (8 точек подряд + rate + loop)
-    for (int i = 0; i < WAVEENV_POINTS; ++i) vp->wave_env.pts[i] = get_param(PARAM_WAVEENV_P1 + i);
-    vp->wave_env.rate = get_param(PARAM_WAVEENV_RATE);
-    vp->wave_env.loop = get_param(PARAM_WAVEENV_LOOP) > 0.5f;
-    sp->poly_voices = (int)get_param(PARAM_POLY_VOICES);
-    sp->legato      = get_param(PARAM_LEGATO) > 0.5f;
+    for (int i = 0; i < WAVEENV_POINTS; ++i) vp->wave_env.pts[i] = pr(PARAM_WAVEENV_P1 + i);
+    vp->wave_env.rate = pr(PARAM_WAVEENV_RATE);
+    vp->wave_env.loop = pr(PARAM_WAVEENV_LOOP) > 0.5f;
+    sp->poly_voices = (int)pr(PARAM_POLY_VOICES);
+    sp->legato      = pr(PARAM_LEGATO) > 0.5f;
     // этап 5 — глобальные эффекты (применяются в audio_task после суммы голосов)
-    sp->fx.od_on    = get_param(PARAM_OD_ON) > 0.5f;
-    sp->fx.od_drive = get_param(PARAM_OD_DRIVE);
-    sp->fx.od_mix   = get_param(PARAM_OD_MIX);
-    sp->fx.delay_on       = get_param(PARAM_DELAY_ON) > 0.5f;
-    sp->fx.delay_time     = get_param(PARAM_DELAY_TIME);
-    sp->fx.delay_feedback = get_param(PARAM_DELAY_FEEDBACK);
-    sp->fx.delay_damp     = get_param(PARAM_DELAY_DAMP);
-    sp->fx.delay_mix      = get_param(PARAM_DELAY_MIX);
-    sp->fx.reverb_on      = get_param(PARAM_REVERB_ON) > 0.5f;
-    sp->fx.reverb_size    = get_param(PARAM_REVERB_SIZE);
-    sp->fx.reverb_damp    = get_param(PARAM_REVERB_DAMP);
-    sp->fx.reverb_width   = get_param(PARAM_REVERB_WIDTH);
-    sp->fx.reverb_mix     = get_param(PARAM_REVERB_MIX);
-    sp->fx.reverb_moddepth = get_param(PARAM_REVERB_MODDEPTH);
-    sp->fx.reverb_modrate  = get_param(PARAM_REVERB_MODRATE);
+    sp->fx.od_on    = pr(PARAM_OD_ON) > 0.5f;
+    sp->fx.od_drive = pr(PARAM_OD_DRIVE);
+    sp->fx.od_mix   = pr(PARAM_OD_MIX);
+    sp->fx.delay_on       = pr(PARAM_DELAY_ON) > 0.5f;
+    sp->fx.delay_time     = pr(PARAM_DELAY_TIME);
+    sp->fx.delay_feedback = pr(PARAM_DELAY_FEEDBACK);
+    sp->fx.delay_damp     = pr(PARAM_DELAY_DAMP);
+    sp->fx.delay_mix      = pr(PARAM_DELAY_MIX);
+    sp->fx.reverb_on      = pr(PARAM_REVERB_ON) > 0.5f;
+    sp->fx.reverb_size    = pr(PARAM_REVERB_SIZE);
+    sp->fx.reverb_damp    = pr(PARAM_REVERB_DAMP);
+    sp->fx.reverb_width   = pr(PARAM_REVERB_WIDTH);
+    sp->fx.reverb_mix     = pr(PARAM_REVERB_MIX);
+    sp->fx.reverb_moddepth = pr(PARAM_REVERB_MODDEPTH);
+    sp->fx.reverb_modrate  = pr(PARAM_REVERB_MODRATE);
 }
 
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
@@ -148,6 +163,14 @@ static void audio_task(void *arg)
 
     for (;;) {
         const int64_t t_start = esp_timer_get_time();
+
+        // Секвенсор/арп (этап 7): продвинуть темп-клок ПЕРЕД сборкой параметров — p-lock активного шага
+        // должен уже стоять, когда build_synth_params читает через pr(). Ноты шага/арпа — этап 7.2/7.3.
+        const SeqConfig scfg = {
+            (int)get_param(PARAM_SEQ_BPM), get_param(PARAM_SEQ_SWING),
+            get_param(PARAM_SEQ_PLAYING) > 0.5f, get_param(PARAM_SEQ_ON) > 0.5f,
+        };
+        seq_tick(&s_seq, &scfg, (float)SAMPLE_RATE, BLOCK_FRAMES);
 
         // Параметры синта — до дренажа (нужны аллокатору при note-on: poly/legato/glide).
         SynthParams sp;
@@ -339,6 +362,7 @@ void audio_init(void)
 
     // Пул голосов (статический в synth) — до старта задачи.
     synth_init();
+    seq_init(&s_seq);   // секвенсор/арп (этап 7): темп-клок в состоянии «стоп»
 
     // FX-буферы delay — ТОЛЬКО PSRAM (этап 5.2). Стерео 1 с @48к = 2×48000 float ≈ 384 КБ; во внутренний
     // DRAM не влезет и не нужно. Первая heap_caps-аллокация в проекте. Не вышло (PSRAM off/фрагментация)
