@@ -52,6 +52,9 @@ type Snapshot struct {
 	// Stale is set when nothing has been decoded for staleAfter while the port is still open: the
 	// board stopped answering (watchdog, wedged I2C) but the connection looks perfectly fine.
 	Stale bool
+	// Presets is the device's stored preset directory from the last completed PRESET_LIST. The tree
+	// is derived from each entry's Path ("Folder/Name"). Empty until PresetList() completes.
+	Presets []proto.Preset
 }
 
 // Param returns the param with the given id and whether it was found.
@@ -101,6 +104,9 @@ type Device struct {
 	missing   int       // shortfall accepted after listTries attempts
 	lastErr   uint8     // most recent RSP_ERR code
 	lastRx    time.Time // when the last frame decoded — liveness
+
+	presets     []proto.Preset // last completed PRESET_LIST result
+	presetBuild []proto.Preset // accumulating current PRESET_LIST (committed on PRESET_END)
 
 	noteCh  chan []byte
 	frameCh chan []byte
@@ -189,6 +195,45 @@ func (d *Device) SetParam(id uint16, val float32) {
 // Refresh re-reads one param's value (GET) — for external-change reflection (no push in v1).
 func (d *Device) Refresh(id uint16) { d.enqueue(d.frameCh, proto.GetFrame(id)) }
 
+// --- presets (stage 6) ---
+
+// requestPresetList clears the accumulator and asks for the device's preset directory. The result
+// lands in Snapshot.Presets once PRESET_END arrives.
+func (d *Device) requestPresetList() {
+	d.mu.Lock()
+	d.presetBuild = nil
+	d.mu.Unlock()
+	d.enqueue(d.frameCh, proto.PresetListFrame())
+}
+
+// PresetList requests the device's stored preset directory.
+func (d *Device) PresetList() { d.requestPresetList() }
+
+// PresetSave snapshots the device's current registry into slot (proto.PresetSlotNew = new) at path,
+// then refreshes the directory so the tree shows the result.
+func (d *Device) PresetSave(slot uint16, path string) {
+	d.enqueue(d.frameCh, proto.PresetSaveFrame(slot, path))
+	d.requestPresetList()
+}
+
+// PresetLoad applies a stored preset to the device, then re-LISTs params so cached cur values refresh.
+func (d *Device) PresetLoad(slot uint16) {
+	d.enqueue(d.frameCh, proto.PresetLoadFrame(slot))
+	d.enqueue(d.frameCh, proto.ListFrame())
+}
+
+// PresetDelete removes a slot, then refreshes the directory.
+func (d *Device) PresetDelete(slot uint16) {
+	d.enqueue(d.frameCh, proto.PresetDeleteFrame(slot))
+	d.requestPresetList()
+}
+
+// PresetRename changes a slot's tree path (values untouched), then refreshes the directory.
+func (d *Device) PresetRename(slot uint16, path string) {
+	d.enqueue(d.frameCh, proto.PresetRenameFrame(slot, path))
+	d.requestPresetList()
+}
+
 func (d *Device) NoteOn(note, vel uint8) {
 	d.mu.Lock()
 	d.held[note] = true
@@ -235,6 +280,8 @@ func (d *Device) Snapshot() Snapshot {
 	for _, id := range d.order {
 		ps = append(ps, d.params[id])
 	}
+	prs := make([]proto.Preset, len(d.presets))
+	copy(prs, d.presets)
 	return Snapshot{
 		State:   d.state,
 		Err:     d.err,
@@ -243,6 +290,7 @@ func (d *Device) Snapshot() Snapshot {
 		Missing: d.missing,
 		LastErr: d.lastErr,
 		Stale:   d.state == Synced && time.Since(d.lastRx) > staleAfter,
+		Presets: prs,
 	}
 }
 
@@ -357,6 +405,25 @@ func (d *Device) handle(body []byte) bool {
 		d.mu.Lock()
 		d.lastErr = e.Code
 		d.mu.Unlock()
+		return true
+	case proto.RspPreset:
+		p, err := proto.ParsePreset(body)
+		if err != nil {
+			return false
+		}
+		d.mu.Lock()
+		d.presetBuild = append(d.presetBuild, p)
+		d.mu.Unlock()
+		return false // accumulate quietly; the UI refreshes on PRESET_END
+	case proto.RspPresetEnd:
+		d.mu.Lock()
+		d.presets = append([]proto.Preset(nil), d.presetBuild...)
+		d.presetBuild = nil
+		d.mu.Unlock()
+		return true
+	case proto.RspPresetSaved:
+		// The assigned slot is not needed by the UI: after a save we re-LIST, and the new preset
+		// appears in the tree by its path. Just let the change propagate.
 		return true
 	default:
 		return false // ACK — nothing to record

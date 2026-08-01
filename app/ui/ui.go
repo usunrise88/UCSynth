@@ -80,6 +80,19 @@ type Controller struct {
 	patchMsg    string
 	patchInit   bool
 
+	// device presets (stage 6): stored in NVS on the синт, tree derived from paths
+	devPresets         []proto.Preset
+	devPresetBtns      []widget.Clickable
+	devPresetScroll    widget.List
+	devPresetSel       uint16
+	devPresetSelOK     bool
+	devPresetListedFor *device.Device // re-list when the device pointer changes (reconnect)
+	devSaveBtn         widget.Clickable
+	devLoadBtn         widget.Clickable
+	devRenameBtn       widget.Clickable
+	devDeleteBtn       widget.Clickable
+	devListBtn         widget.Clickable
+
 	// MIDI input
 	midiNames   []string
 	midiBtns    []widget.Clickable

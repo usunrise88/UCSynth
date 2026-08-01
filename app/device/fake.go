@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"sort"
 	"sync"
 
 	"ucsynth/app/proto"
@@ -24,10 +25,20 @@ type Fake struct {
 	dropParams int  // omit this many PARAM frames from the next LIST (simulated CRC loss)
 	dropSticky bool // keep dropping on every LIST instead of just the next one
 	mute       bool // stop answering entirely (simulated wedged firmware)
+
+	presets    map[uint16]fakePreset // in-memory "NVS": slot → {path, values}
+	presetNext uint16                // monotonic slot counter (mirrors preset_store next_id)
+}
+
+// fakePreset mirrors a stored preset blob: a tree path + a registry snapshot (id→value).
+type fakePreset struct {
+	path   string
+	values map[uint16]float32
 }
 
 func NewFake(conn io.ReadWriteCloser, params []proto.Param, stat proto.Stat) *Fake {
-	f := &Fake{conn: conn, dec: proto.NewDecoder(), params: map[uint16]proto.Param{}, stat: stat}
+	f := &Fake{conn: conn, dec: proto.NewDecoder(), params: map[uint16]proto.Param{}, stat: stat,
+		presets: map[uint16]fakePreset{}}
 	for _, p := range params {
 		f.order = append(f.order, p.ID)
 		f.params[p.ID] = p
@@ -125,9 +136,117 @@ func (f *Fake) respond(body []byte) {
 		s := f.stat
 		f.mu.Unlock()
 		f.write(proto.StatRespFrame(s))
+	case proto.CmdPresetSave:
+		slot, path, ok := parseSlotPath(body)
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		f.mu.Lock()
+		use := slot
+		if slot == proto.PresetSlotNew {
+			use = f.presetNext
+			f.presetNext++
+		}
+		vals := map[uint16]float32{} // snapshot current registry
+		for id, p := range f.params {
+			vals[id] = p.Cur
+		}
+		f.presets[use] = fakePreset{path: path, values: vals}
+		f.mu.Unlock()
+		f.write(proto.PresetSavedFrame(use))
+	case proto.CmdPresetLoad:
+		if len(body) < 3 {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		slot := binary.LittleEndian.Uint16(body[1:])
+		f.mu.Lock()
+		pr, ok := f.presets[slot]
+		if ok {
+			for id, p := range f.params { // reset to default, then apply stored values
+				p.Cur = p.Def
+				f.params[id] = p
+			}
+			for id, v := range pr.values {
+				if p, o := f.params[id]; o {
+					p.Cur = v
+					f.params[id] = p
+				}
+			}
+		}
+		f.mu.Unlock()
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrNoPreset))
+			return
+		}
+		f.write(proto.AckFrame())
+	case proto.CmdPresetDelete:
+		if len(body) < 3 {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		slot := binary.LittleEndian.Uint16(body[1:])
+		f.mu.Lock()
+		_, ok := f.presets[slot]
+		delete(f.presets, slot)
+		f.mu.Unlock()
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrNoPreset))
+			return
+		}
+		f.write(proto.AckFrame())
+	case proto.CmdPresetRename:
+		slot, path, ok := parseSlotPath(body)
+		if !ok {
+			f.write(proto.ErrRespFrame(proto.ErrBadLen))
+			return
+		}
+		f.mu.Lock()
+		pr, found := f.presets[slot]
+		if found {
+			pr.path = path
+			f.presets[slot] = pr
+		}
+		f.mu.Unlock()
+		if !found {
+			f.write(proto.ErrRespFrame(proto.ErrNoPreset))
+			return
+		}
+		f.write(proto.AckFrame())
+	case proto.CmdPresetList:
+		f.mu.Lock()
+		slots := make([]uint16, 0, len(f.presets))
+		for s := range f.presets {
+			slots = append(slots, s)
+		}
+		sort.Slice(slots, func(i, j int) bool { return slots[i] < slots[j] })
+		frames := make([][]byte, 0, len(slots)+1)
+		for _, s := range slots {
+			frames = append(frames, proto.PresetRespFrame(s, f.presets[s].path))
+		}
+		count := uint16(len(slots))
+		f.mu.Unlock()
+		for _, fr := range frames {
+			f.write(fr)
+		}
+		f.write(proto.PresetEndFrame(count))
 	default:
 		f.write(proto.ErrRespFrame(proto.ErrUnknownCmd))
 	}
+}
+
+// parseSlotPath decodes [slot:u16][path_len:u8][path] from a request body.
+func parseSlotPath(body []byte) (uint16, string, bool) {
+	if len(body) < 4 {
+		return 0, "", false
+	}
+	slot := binary.LittleEndian.Uint16(body[1:])
+	pl := int(body[3])
+	if len(body) < 4+pl {
+		return 0, "", false
+	}
+	return slot, string(body[4 : 4+pl]), true
 }
 
 func (f *Fake) write(frame []byte) { _, _ = f.conn.Write(frame) }

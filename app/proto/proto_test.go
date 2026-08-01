@@ -127,6 +127,71 @@ func TestEncodeEmptyBody(t *testing.T) {
 	}
 }
 
+// Preset frame builders/parsers round-trip (stage 6). Wire layouts mirror protocol.h / preset.h.
+func TestPresetFrameRoundTrip(t *testing.T) {
+	dec := func(frame []byte) []byte {
+		d := NewDecoder()
+		b := d.Push(frame)
+		if len(b) != 1 {
+			t.Fatalf("decoded %d frames, want 1", len(b))
+		}
+		return b[0]
+	}
+
+	// SAVE new slot with a tree path.
+	body := dec(PresetSaveFrame(PresetSlotNew, "Leads/Saw"))
+	if Opcode(body) != CmdPresetSave || binary.LittleEndian.Uint16(body[1:]) != PresetSlotNew {
+		t.Fatalf("SAVE opcode/slot: %v", body)
+	}
+	if int(body[3]) != len("Leads/Saw") || string(body[4:4+body[3]]) != "Leads/Saw" {
+		t.Fatalf("SAVE path malformed: %v", body)
+	}
+
+	// LOAD / DELETE carry just a slot.
+	for _, tc := range []struct {
+		frame []byte
+		op    byte
+	}{
+		{PresetLoadFrame(7), CmdPresetLoad},
+		{PresetDeleteFrame(7), CmdPresetDelete},
+	} {
+		b := dec(tc.frame)
+		if Opcode(b) != tc.op || binary.LittleEndian.Uint16(b[1:]) != 7 {
+			t.Fatalf("op 0x%02X slot mismatch: %v", tc.op, b)
+		}
+	}
+
+	// RENAME carries slot + path.
+	if b := dec(PresetRenameFrame(3, "Bass/Deep")); Opcode(b) != CmdPresetRename || binary.LittleEndian.Uint16(b[1:]) != 3 {
+		t.Fatalf("RENAME slot: %v", b)
+	}
+
+	// LIST request.
+	if Opcode(dec(PresetListFrame())) != CmdPresetList {
+		t.Fatal("LIST opcode")
+	}
+
+	// Responses: PRESET / PRESET_END / PRESET_SAVED.
+	if p, err := ParsePreset(dec(PresetRespFrame(9, "A/B/C"))); err != nil || p.Slot != 9 || p.Path != "A/B/C" {
+		t.Fatalf("PRESET resp round-trip: %+v err=%v", p, err)
+	}
+	if e, err := ParsePresetEnd(dec(PresetEndFrame(4))); err != nil || e.Count != 4 {
+		t.Fatalf("PRESET_END: %+v err=%v", e, err)
+	}
+	if s, err := ParsePresetSaved(dec(PresetSavedFrame(11))); err != nil || s.Slot != 11 {
+		t.Fatalf("PRESET_SAVED: %+v err=%v", s, err)
+	}
+
+	// Path over PresetPathMax is clamped by the builder (firmware bounds the wire path the same way).
+	long := make([]byte, PresetPathMax+50)
+	for i := range long {
+		long[i] = 'a'
+	}
+	if b := dec(PresetSaveFrame(0, string(long))); int(b[3]) != PresetPathMax {
+		t.Fatalf("long path not clamped: path_len=%d want %d", b[3], PresetPathMax)
+	}
+}
+
 // A bad CRC frame is dropped; a following good frame still decodes.
 func TestDecoderBadCRC(t *testing.T) {
 	bad := StatFrame()
