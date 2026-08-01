@@ -28,6 +28,14 @@ enum {
     CMD_PRESET_LOAD   = 0x09,  // [slot:u16] → RSP_ACK / RSP_ERR
     CMD_PRESET_DELETE = 0x0A,  // [slot:u16] → RSP_ACK / RSP_ERR
     CMD_PRESET_RENAME = 0x0B,  // [slot:u16][path_len:u8][path] → RSP_ACK / RSP_ERR
+    // --- секвенсор (этап 7): паттерн передаётся ПОШАГОВО (кадр LEN≤255, весь паттерн ~900 Б) ---
+    CMD_SEQ_SET_STEP  = 0x0C,  // [step:u8][step-blob] → RSP_ACK
+    CMD_SEQ_GET       = 0x0D,  // (без аргументов) → RSP_SEQ_STEP×16
+    CMD_SEQ_SAVE      = 0x0E,  // [slot:u16 (0xFFFF=новый)][path_len:u8][path] → RSP_SEQ_SAVED
+    CMD_SEQ_LOAD      = 0x0F,  // [slot:u16] → RSP_ACK / RSP_ERR (GUI затем GET)
+    CMD_SEQ_DELETE    = 0x10,  // [slot:u16] → RSP_ACK / RSP_ERR
+    CMD_SEQ_LIST      = 0x11,  // (без аргументов) → RSP_SEQ_ENTRY×N + RSP_SEQ_END
+    CMD_SEQ_RENAME    = 0x12,  // [slot:u16][path_len:u8][path] → RSP_ACK / RSP_ERR
 };
 // МК → ПК (ответы):
 enum {
@@ -39,6 +47,11 @@ enum {
     RSP_PRESET_END   = 0x85,  // [count:u16]
     RSP_STAT         = 0x86,  // [heap:u32][minheap:u32][uptime_ms:u32][cpu_permille:u32][underruns:u32]
     RSP_PRESET_SAVED = 0x87,  // [slot:u16]  (назначенный слот, в ответ на SAVE)
+    // --- секвенсор (этап 7) ---
+    RSP_SEQ_STEP     = 0x88,  // [step:u8][step-blob]  (по одному на шаг в ответ на SEQ_GET)
+    RSP_SEQ_ENTRY    = 0x89,  // [slot:u16][path_len:u8][path]  (ответ на SEQ_LIST)
+    RSP_SEQ_END      = 0x8A,  // [count:u16]  (конец SEQ_LIST)
+    RSP_SEQ_SAVED    = 0x8B,  // [slot:u16]  (ответ на SEQ_SAVE)
     RSP_ERR          = 0xFF,  // [code:u8]
 };
 // Коды ошибок (тело RSP_ERR):
@@ -79,11 +92,26 @@ typedef struct {
     void *ctx;
 } preset_backend_t;
 
-// Разобрать тело запроса, выдать ответ(ы) через emit. Значения — из control; пресеты — через presets
-// (может быть nullptr → preset-опкоды вернут ERR_UNKNOWN_CMD).
+// Бэкенд секвенсора (этап 7) — тот же приём инъекции. set_step/get_step трогают живой паттерн (Core 0
+// через audio_seq_*), save/load/del/rename/list — NVS. Методы 0=ok иначе код RSP_ERR; get_step → длина
+// шаг-блоба; list ≥0 = число, <0 = ошибка. list переиспользует preset_list_emit_fn (та же раскладка).
+typedef struct {
+    int    (*set_step)(void *ctx, uint8_t step, const uint8_t *blob, size_t len);
+    size_t (*get_step)(void *ctx, uint8_t step, uint8_t *out, size_t cap);
+    int    (*save)(void *ctx, uint16_t slot, const char *path, uint16_t *out_slot);
+    int    (*load)(void *ctx, uint16_t slot);
+    int    (*del)(void *ctx, uint16_t slot);
+    int    (*rename)(void *ctx, uint16_t slot, const char *path);
+    int    (*list)(void *ctx, preset_list_emit_fn emit_entry, void *entry_ctx);
+    void   *ctx;
+} seq_backend_t;
+
+// Разобрать тело запроса, выдать ответ(ы) через emit. Значения — из control; пресеты — через presets;
+// секвенсор — через seq (любой nullptr → его опкоды вернут ERR_UNKNOWN_CMD).
 void comm_handle_request(const uint8_t *body, size_t body_len,
                          const sys_stats_t *stats,
                          const preset_backend_t *presets,
+                         const seq_backend_t *seq,
                          comm_emit_fn emit, void *ctx);
 
 #ifdef __cplusplus

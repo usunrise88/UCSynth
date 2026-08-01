@@ -5,6 +5,7 @@
 #include "protocol.h"
 #include "frame.h"
 #include "preset.h"
+#include "seq_codec.h"
 
 #include <cstdio>
 #include <cstring>
@@ -12,6 +13,8 @@
 #include <cmath>
 #include <vector>
 #include <map>
+#include <string>
+#include <utility>
 #include <initializer_list>
 
 static int g_fail = 0;
@@ -30,12 +33,72 @@ static float f32(const uint8_t *p) { uint32_t v = u32(p); float f; std::memcpy(&
 
 // Прогнать тело запроса (список int → байты, без narrowing) через диспетчер.
 static Sink run(std::initializer_list<int> bytes, const sys_stats_t *st = nullptr,
-                const preset_backend_t *pb = nullptr) {
+                const preset_backend_t *pb = nullptr, const seq_backend_t *sb = nullptr) {
     std::vector<uint8_t> body;
     for (int b : bytes) body.push_back((uint8_t)b);
     Sink s;
-    comm_handle_request(body.data(), body.size(), st, pb, sink_emit, &s);
+    comm_handle_request(body.data(), body.size(), st, pb, sb, sink_emit, &s);
     return s;
+}
+
+// Вариант с телом-вектором (когда байты собираются в рантайме, напр. seq-блоб шага).
+static Sink run_v(const std::vector<uint8_t> &body, const seq_backend_t *sb) {
+    Sink s;
+    comm_handle_request(body.data(), body.size(), nullptr, nullptr, sb, sink_emit, &s);
+    return s;
+}
+
+// In-memory seq backend: настоящий кодек паттерна + std::map «NVS».
+struct FakeSeq {
+    SeqStep pattern[SEQ_STEPS];
+    std::map<uint16_t, std::pair<std::string, std::vector<uint8_t>>> store;
+    uint16_t next = 0;
+    FakeSeq() { for (int i = 0; i < SEQ_STEPS; ++i) pattern[i] = SeqStep{}; }
+};
+static int fseq_set_step(void *ctx, uint8_t step, const uint8_t *blob, size_t len) {
+    auto *f = static_cast<FakeSeq *>(ctx);
+    if (step >= SEQ_STEPS) return ERR_BAD_LEN;
+    SeqStep st;
+    if (seq_step_deserialize(blob, len, &st) == 0) return ERR_BAD_LEN;
+    f->pattern[step] = st;
+    return 0;
+}
+static size_t fseq_get_step(void *ctx, uint8_t step, uint8_t *out, size_t cap) {
+    auto *f = static_cast<FakeSeq *>(ctx);
+    if (step >= SEQ_STEPS) return 0;
+    return seq_step_serialize(out, cap, &f->pattern[step]);
+}
+static int fseq_save(void *ctx, uint16_t slot, const char *path, uint16_t *out) {
+    auto *f = static_cast<FakeSeq *>(ctx);
+    const uint16_t use = (slot == 0xFFFF) ? f->next++ : slot;
+    uint8_t buf[SEQ_BLOB_MAX];
+    const size_t n = seq_serialize(buf, sizeof(buf), f->pattern);
+    if (!n) return ERR_STORAGE;
+    f->store[use] = { std::string(path), std::vector<uint8_t>(buf, buf + n) };
+    if (out) *out = use;
+    return 0;
+}
+static int fseq_load(void *ctx, uint16_t slot) {
+    auto *f = static_cast<FakeSeq *>(ctx);
+    auto it = f->store.find(slot);
+    if (it == f->store.end()) return ERR_NO_PRESET;
+    return seq_deserialize(it->second.second.data(), it->second.second.size(), f->pattern) ? 0 : ERR_STORAGE;
+}
+static int fseq_del(void *ctx, uint16_t slot) {
+    return static_cast<FakeSeq *>(ctx)->store.erase(slot) ? 0 : ERR_NO_PRESET;
+}
+static int fseq_rename(void *ctx, uint16_t slot, const char *path) {
+    auto *f = static_cast<FakeSeq *>(ctx);
+    auto it = f->store.find(slot);
+    if (it == f->store.end()) return ERR_NO_PRESET;
+    it->second.first = path;
+    return 0;
+}
+static int fseq_list(void *ctx, preset_list_emit_fn emit, void *ectx) {
+    auto *f = static_cast<FakeSeq *>(ctx);
+    int n = 0;
+    for (auto &kv : f->store) { emit(ectx, kv.first, kv.second.first.c_str()); ++n; }
+    return n;
 }
 
 // In-memory preset backend: настоящий кодек (preset_serialize/apply/read_path), «NVS» = map slot→blob.
@@ -221,6 +284,56 @@ int main() {
             auto s = run({ CMD_PRESET_SAVE, 0x00, 0x00, 5, 'A', 'B' }, nullptr, &be);
             CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_BAD_LEN, "SAVE усечённый путь -> ERR_BAD_LEN");
         }
+    }
+
+    // --- секвенсор: фрейминг опкодов через in-memory backend (кодек паттерна настоящий) ---
+    {
+        FakeSeq fs;
+        const seq_backend_t sb{ fseq_set_step, fseq_get_step, fseq_save, fseq_load, fseq_del, fseq_rename, fseq_list, &fs };
+
+        // SET_STEP 3: активный шаг с нотой 62
+        SeqStep st = SeqStep{}; st.active = true; st.n_notes = 1; st.notes[0] = 62; st.velocity = 100; st.trig_prob = 1.0f;
+        uint8_t stblob[64]; const size_t sn = seq_step_serialize(stblob, sizeof(stblob), &st);
+        std::vector<uint8_t> body; body.push_back(CMD_SEQ_SET_STEP); body.push_back(3);
+        for (size_t i = 0; i < sn; ++i) body.push_back(stblob[i]);
+        { auto s = run_v(body, &sb); CHECK(s.frames.size() == 1 && s.frames[0][0] == RSP_ACK, "SEQ_SET_STEP -> ACK"); }
+        CHECK(fs.pattern[3].active && fs.pattern[3].notes[0] == 62, "SET_STEP применён к паттерну");
+
+        // GET → 16 RSP_SEQ_STEP; шаг 3 несёт активную ноту 62
+        {
+            auto s = run({ CMD_SEQ_GET }, nullptr, nullptr, &sb);
+            CHECK(s.frames.size() == 16, "SEQ_GET -> 16 шагов");
+            CHECK(s.frames[3][0] == RSP_SEQ_STEP && s.frames[3][1] == 3, "RSP_SEQ_STEP #3");
+            SeqStep got; const size_t c = seq_step_deserialize(&s.frames[3][2], s.frames[3].size() - 2, &got);
+            CHECK(c > 0 && got.active && got.notes[0] == 62, "GET шаг 3 = нота 62");
+        }
+
+        // SAVE new → RSP_SEQ_SAVED slot 0
+        { auto s = run({ CMD_SEQ_SAVE, 0xFF, 0xFF, 1, 'A' }, nullptr, nullptr, &sb);
+          CHECK(s.frames[0][0] == RSP_SEQ_SAVED && u16(&s.frames[0][1]) == 0, "SEQ_SAVE -> SAVED slot0"); }
+
+        // затереть шаг 3, LOAD slot0 → ACK, паттерн восстановлен
+        fs.pattern[3] = SeqStep{};
+        { auto s = run({ CMD_SEQ_LOAD, 0x00, 0x00 }, nullptr, nullptr, &sb);
+          CHECK(s.frames[0][0] == RSP_ACK, "SEQ_LOAD -> ACK");
+          CHECK(fs.pattern[3].active && fs.pattern[3].notes[0] == 62, "LOAD восстановил шаг 3"); }
+
+        // LIST → RSP_SEQ_ENTRY + RSP_SEQ_END count 1
+        { auto s = run({ CMD_SEQ_LIST }, nullptr, nullptr, &sb);
+          CHECK(s.frames.size() == 2 && s.frames[0][0] == RSP_SEQ_ENTRY && u16(&s.frames[0][1]) == 0, "SEQ_LIST entry slot0");
+          CHECK(s.frames[1][0] == RSP_SEQ_END && u16(&s.frames[1][1]) == 1, "SEQ_LIST END count 1"); }
+
+        // RENAME + DELETE, затем LOAD удалённого → ERR
+        { auto s = run({ CMD_SEQ_RENAME, 0x00, 0x00, 1, 'B' }, nullptr, nullptr, &sb);
+          CHECK(s.frames[0][0] == RSP_ACK, "SEQ_RENAME -> ACK"); }
+        { auto s = run({ CMD_SEQ_DELETE, 0x00, 0x00 }, nullptr, nullptr, &sb);
+          CHECK(s.frames[0][0] == RSP_ACK, "SEQ_DELETE -> ACK"); }
+        { auto s = run({ CMD_SEQ_LOAD, 0x00, 0x00 }, nullptr, nullptr, &sb);
+          CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_NO_PRESET, "LOAD удалённого -> ERR"); }
+
+        // seq-опкод без backend → ERR_UNKNOWN_CMD
+        { auto s = run({ CMD_SEQ_GET });
+          CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_UNKNOWN_CMD, "seq без backend -> ERR_UNKNOWN_CMD"); }
     }
 
     // --- id ↔ строка реестра ---

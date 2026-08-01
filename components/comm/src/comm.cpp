@@ -7,6 +7,7 @@
 #include "frame.h"
 #include "audio.h"
 #include "preset_store.h"
+#include "seq_store.h"
 
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -106,6 +107,51 @@ static const preset_backend_t s_preset_backend = {
     be_save, be_load, be_delete, be_rename, be_list, nullptr
 };
 
+// --- seq backend: паттерн (live через audio_seq_*, Core 0) + NVS (seq_store). Буфер 1024 = SEQ_BLOB_MAX
+//     (кодек приватен для audio → размер захардкожен здесь). Single-caller (RX-задача) → static безопасен. ---
+static int be_seq_set_step(void *, uint8_t step, const uint8_t *blob, size_t len) {
+    return audio_seq_set_step(step, blob, len) ? 0 : ERR_BAD_LEN;
+}
+static size_t be_seq_get_step(void *, uint8_t step, uint8_t *out, size_t cap) {
+    return audio_seq_get_step(step, out, cap);
+}
+static int be_seq_save(void *, uint16_t slot, const char *path, uint16_t *out_slot) {
+    static uint8_t buf[1024];
+    const size_t n = audio_seq_get_pattern(buf, sizeof(buf));
+    if (n == 0) return ERR_STORAGE;
+    return seq_store_save(slot, path, buf, n, out_slot) == ESP_OK ? 0 : ERR_STORAGE;
+}
+static int be_seq_load(void *, uint16_t slot) {
+    static uint8_t buf[1024];
+    size_t n = 0;
+    const esp_err_t e = seq_store_load(slot, buf, sizeof(buf), &n);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return ERR_NO_PRESET;   // «слот не найден» (общий код)
+    if (e != ESP_OK) return ERR_STORAGE;
+    return audio_seq_set_pattern(buf, n) ? 0 : ERR_STORAGE;
+}
+static int be_seq_delete(void *, uint16_t slot) {
+    const esp_err_t e = seq_store_delete(slot);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return ERR_NO_PRESET;
+    return e == ESP_OK ? 0 : ERR_STORAGE;
+}
+static int be_seq_rename(void *, uint16_t slot, const char *path) {
+    const esp_err_t e = seq_store_rename(slot, path);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return ERR_NO_PRESET;
+    return e == ESP_OK ? 0 : ERR_STORAGE;
+}
+struct SeqListBridge { preset_list_emit_fn emit; void *ctx; int count; };
+static void seq_store_bridge(void *ctx, uint16_t slot, const char *path) {
+    SeqListBridge *b = static_cast<SeqListBridge *>(ctx);
+    b->emit(b->ctx, slot, path); ++b->count;
+}
+static int be_seq_list(void *, preset_list_emit_fn emit_entry, void *entry_ctx) {
+    SeqListBridge b{ emit_entry, entry_ctx, 0 };
+    return seq_store_list(seq_store_bridge, &b) == ESP_OK ? b.count : -1;
+}
+static const seq_backend_t s_seq_backend = {
+    be_seq_set_step, be_seq_get_step, be_seq_save, be_seq_load, be_seq_delete, be_seq_rename, be_seq_list, nullptr
+};
+
 static void comm_task(void *arg)
 {
     (void)arg;
@@ -140,7 +186,7 @@ static void comm_task(void *arg)
                 .cpu_permille = cpu,
                 .underruns    = underruns,
             };
-            comm_handle_request(body, blen, &st, &s_preset_backend, emit_usb, nullptr);
+            comm_handle_request(body, blen, &st, &s_preset_backend, &s_seq_backend, emit_usb, nullptr);
         }
     }
 }

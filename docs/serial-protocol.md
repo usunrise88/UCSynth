@@ -44,6 +44,13 @@
 | 0x09 | PRESET_LOAD   | `slot:u16`                                  |
 | 0x0A | PRESET_DELETE | `slot:u16`                                  |
 | 0x0B | PRESET_RENAME | `slot:u16` `path_len:u8` `path`             |
+| 0x0C | SEQ_SET_STEP  | `step:u8` `step-blob` (один шаг паттерна)   |
+| 0x0D | SEQ_GET       | —                                           |
+| 0x0E | SEQ_SAVE      | `slot:u16` (`0xFFFF`=новый) `path_len:u8` `path` |
+| 0x0F | SEQ_LOAD      | `slot:u16`                                  |
+| 0x10 | SEQ_DELETE    | `slot:u16`                                  |
+| 0x11 | SEQ_LIST      | —                                           |
+| 0x12 | SEQ_RENAME    | `slot:u16` `path_len:u8` `path`             |
 
 ### МК → ПК (ответы)
 
@@ -57,6 +64,10 @@
 | 0x85 | PRESET_END   | `count:u16`                                                                  |
 | 0x86 | STAT         | `heap:u32` `minheap:u32` `uptime_ms:u32` `cpu_permille:u32` `underruns:u32`    |
 | 0x87 | PRESET_SAVED | `slot:u16` (назначенный слот, в ответ на PRESET_SAVE)                         |
+| 0x88 | SEQ_STEP     | `step:u8` `step-blob` (по одному на шаг в ответ на SEQ_GET; всего 16)         |
+| 0x89 | SEQ_ENTRY    | `slot:u16` `path_len:u8` `path` (в ответ на SEQ_LIST)                         |
+| 0x8A | SEQ_END      | `count:u16` (конец SEQ_LIST)                                                  |
+| 0x8B | SEQ_SAVED    | `slot:u16` (назначенный слот, в ответ на SEQ_SAVE)                            |
 | 0xFF | ERR          | `code:u8`                                                                     |
 
 `LIST` → серия `PARAM` (по одному на параметр) + завершающий `LISTEND`.
@@ -74,8 +85,17 @@
 приходит `cur`). `PRESET_LIST` → серия `PRESET` + завершающий `PRESET_END count`. Отладочный `test_tone`
 в снимок не входит и загрузкой не дёргается. Путь — до 96 байт.
 
+**Секвенсор (этап 7):** темп/транспорт/арп — обычные параметры реестра (`seq_bpm`, `seq_swing`,
+`seq_playing`, `seq_on`, `arp_*`; идут через `SET`/`LIST`). **Паттерн** (16 шагов × аккорд + p-locks)
+не влезает в один кадр (`LEN≤255`, весь ~900 Б), поэтому передаётся **пошагово**: `SEQ_SET_STEP step blob`
+на каждый изменённый шаг; `SEQ_GET` → 16 кадров `SEQ_STEP`. Хранилище паттернов — в NVS (namespace
+`patterns`), опкоды `SEQ_SAVE/LOAD/DELETE/LIST/RENAME` зеркалят пресетные (`SEQ_LOAD` применяет к живому
+паттерну — GUI затем шлёт `SEQ_GET`). **Раскладка `step-blob`** (LE): `u8 flags(bit0=active)` `u8 n_notes`
+`u8 notes[n_notes]` `u8 velocity` `u8 trig_q` (вероятность·255) `u8 n_plocks` `n_plocks×{ u16 id; f32 val }`.
+Весь паттерн в NVS = `u8 version` + 16×step-blob.
+
 **Коды ошибок** (`ERR`): `1` неизвестная команда, `2` неверный id, `3` неверная длина тела,
-`4` пресет не найден (пустой слот), `5` сбой хранилища (NVS).
+`4` слот не найден (пустой пресет/паттерн), `5` сбой хранилища (NVS).
 
 ## Пример (кадры целиком, hex)
 
@@ -95,8 +115,9 @@ LIST:           55 AA 01 03 5D 1E
   ← ... PARAM #4..#33  (голос 3.1–3.6: ADSR, осц, фильтр, lo-fi, полифония, glide) ...
   ← ... PARAM #34..#63 (этап 4: LFO×2, mod-wheel, 8 слотов мод-матрицы, wave-огибающая) ...
   ← ... PARAM #64..#85 (этап 5: overdrive, delay, reverb) — все см. control.h ...
-  ← ... PARAM #86..#87 (этап 6: reverb_moddepth, reverb_modrate — модуляция гребёнок) ...
-  ← LISTEND:    55 AA 03 83 5800 00 FA                        (count = 88 = 0x58)
+  ← ... PARAM #86..#87 (этап 6: reverb_moddepth, reverb_modrate) ...
+  ← ... PARAM #88..#96 (этап 7: seq_bpm/swing/playing/on, arp_on/mode/octaves/rate/hold) ...
+  ← LISTEND:    55 AA 03 83 <count LE> <crc>                  (count = PARAM_COUNT в control.h, растёт по этапам)
 
 GET master_volume (id 0):   55 AA 03 02 0000 7C 71
   ← VALUE 0.8:              55 AA 07 81 0000 CDCC4C3F 17 B3
@@ -125,8 +146,8 @@ python tools/serialtest.py COM8      # порт нативного USB S3 (не 
 полифония/glide), модуляцию (4.1 LFO→cutoff/pitch через матрицу, 4.2 wave-огибающая/морф) и
 эффекты (5.1 overdrive, 5.2 delay, 5.3 reverb).
 
-Ожидаемо: список из **88** параметров (реестр строится динамически — новые параметры GUI/скрипт
-подхватывают через LIST без правок; число сверяется с `PARAM_COUNT` в `control.h`), STAT
+Ожидаемо: список из **`PARAM_COUNT`** параметров (реестр строится динамически — новые параметры GUI/скрипт
+подхватывают через LIST без правок; число сверяется с `PARAM_COUNT` в `control.h`, растёт по этапам), STAT
 показывает heap/uptime + `cpu_permille` (‰ бюджета аудио-блока) и `underruns`, ноты меняют высоту,
 высокие ноты звучат чисто (band-limit), демо слышно по секциям. Строки `ESP_LOG` в потоке — норма,
 скрипт их пропускает (не проходят CRC).

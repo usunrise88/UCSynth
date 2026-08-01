@@ -665,3 +665,22 @@ delay/reverb с обратной связью (и `fixedgain=0.015` ревера
   событий, что и секвенсор → тот же `synth_note_on/off`.
 - **Тест** расширен: up (60,64,67,wrap), down, 2 октавы (60,64,72,76), held с/без hold, arp off снимает ноту.
   Host-тесты (16 наборов) зелёные.
+
+### 2026-08-01 — этап 7.4: протокол + NVS-хранилище паттернов (сборка) 🔨
+Паттерн стал редактируемым/сохраняемым по проводу.
+- **Кодек** `seq_codec.*` (host-тестируем): пошаговый `seq_step_(de)serialize` + весь паттерн
+  `seq_(de)serialize` (`u8 version`+16×шаг). Пошаговый — потому что весь паттерн (~900 Б) в кадр (`LEN≤255`)
+  не влезает.
+- **NVS-хранилище** `seq_store.*` (namespace `patterns` в разделе `presets` — без нового раздела): блоб-на-слот
+  `q<id>`, путь+блоб вместе, мета next_id, probe-листинг — по образцу `preset_store`.
+- **Протокол:** 7 опкодов `SEQ_SET_STEP/GET/SAVE/LOAD/DELETE/LIST/RENAME` (0x0C–0x12) + ответы
+  `SEQ_STEP/ENTRY/END/SAVED` (0x88–0x8B). `protocol.cpp` остаётся чистым: `seq_backend_t` инъектится как
+  `preset_backend_t`. **Провод пошаговый** (`SET_STEP`/16×`GET`), NVS — паттерн целиком.
+- **Кросс-ядро:** правка → очередь `s_step_q` (Core 1→0, применяется до тика); `audio_seq_set_step/set_pattern/
+  get_step/get_pattern` в `audio.cpp`. Транспорт/темп/арп — обычные параметры реестра (SET/LIST). `app_main`:
+  `seq_store_init`.
+- **Тесты:** `test_seq_codec` (round-trip шага и паттерна, гарды) + `test_protocol` расширен фреймингом
+  seq-опкодов через in-memory fake backend (SET_STEP→GET→SAVE→LOAD→LIST→RENAME→DELETE). 17 host-наборов зелёные.
+- Долг: **D-021** (чтение паттерна с Core 1 без лока — гонка только при одновременных правке+чтении, не бывает),
+  **D-022** (фикс. велосити арпа). Контракт `serial-protocol.md` обновлён (опкоды + step-blob + счётчик стал
+  динамическим `PARAM_COUNT`). GUI-сторона (Go) — 7.5.

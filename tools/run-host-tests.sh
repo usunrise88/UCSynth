@@ -10,11 +10,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/control/include" \
     -I "$ROOT/components/comm/include" \
     -I "$ROOT/components/preset/include" \
+    -I "$ROOT/components/audio/src" \
     "$ROOT/test/host/test_protocol.cpp" \
     "$ROOT/components/control/src/control.cpp" \
     "$ROOT/components/comm/src/protocol.cpp" \
     "$ROOT/components/comm/src/frame.cpp" \
     "$ROOT/components/preset/src/preset_codec.cpp" \
+    "$ROOT/components/audio/src/seq_codec.cpp" \
     -o "$OUT"
 
 "$OUT"
@@ -173,7 +175,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
 
 "$OUT15"
 
-# Тест seq (этап 7.1 — темп-клок секвенсора: длина шага/bpm, swing, транспорт, врап).
+# Тест seq (этап 7.1–7.3 — темп-клок, паттерн+p-locks, арпеджиатор).
 OUT16="$(mktemp -d)/seqtest"
 g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/audio/src" \
@@ -182,3 +184,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT16"
 
 "$OUT16"
+
+# Тест seq_codec (этап 7.4 — кодек паттерна: round-trip, p-locks, гарды).
+OUT17="$(mktemp -d)/seqcodectest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_seq_codec.cpp" \
+    "$ROOT/components/audio/src/seq_codec.cpp" \
+    -o "$OUT17"
+
+"$OUT17"

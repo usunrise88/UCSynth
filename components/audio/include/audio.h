@@ -3,12 +3,22 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void audio_init(void);
+
+// Секвенсор (этап 7): паттерн редактируется/грузится из comm (Core 1). Провод шлёт паттерн ПОШАГОВО
+// (кадр ≤255 Б, весь ~900). set_step/set_pattern кладут обновление шага в очередь → аудио-задача (Core 0)
+// применяет в начале блока. get_* сериализуют текущий паттерн (формат seq_codec) для дампа/сохранения.
+// Блоб — формат seq_codec (шаг / весь паттерн). Возврат set — false при битом/OOB; get — длина (0 при cap).
+bool   audio_seq_set_step(uint8_t step, const uint8_t *blob, size_t len);
+bool   audio_seq_set_pattern(const uint8_t *blob, size_t len);
+size_t audio_seq_get_step(uint8_t step, uint8_t *out, size_t cap);
+size_t audio_seq_get_pattern(uint8_t *out, size_t cap);
 
 // Нотный путь Core 1 → Core 0 (этап 3.0). comm (Core 1) на NOTE_ON/OFF зовёт эти функции;
 // событие кладётся в FreeRTOS-очередь, аудио-задача (Core 0) дренит её в начале блока и

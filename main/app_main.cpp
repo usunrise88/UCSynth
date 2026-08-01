@@ -24,6 +24,7 @@
 #include "display.h"
 #include "io.h"
 #include "preset_store.h"
+#include "seq_store.h"
 
 static const char *TAG = "ucsynth";
 
@@ -128,6 +129,7 @@ extern "C" void app_main(void)
     }
     if (nvs_err == ESP_OK) {
         preset_store_init();
+        seq_store_init();   // паттерны секвенсора (этап 7) — свой namespace в том же разделе
     } else {
         ESP_LOGE(TAG, "NVS 'presets' init: %s — пресеты недоступны (синт работает без сохранения)",
                  esp_err_to_name(nvs_err));

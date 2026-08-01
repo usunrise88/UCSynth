@@ -12,6 +12,7 @@
 #include "lfo.h"
 #include "fx.h"
 #include "seq_engine.h"
+#include "seq_codec.h"
 
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -66,6 +67,11 @@ struct NoteEvent {
     uint8_t vel;    // velocity (задел под вел-чувствительность; в 3.1 не используется)
 };
 static QueueHandle_t s_note_q = nullptr;
+
+// Обновление шага паттерна: comm (Core 1) → аудио-задача (Core 0) через очередь (этап 7.4). Весь SeqStep
+// в элементе (~64 Б); comm десериализует блоб, кладёт сюда, задача применяет в s_seq.pattern[step] до тика.
+struct StepUpdate { uint8_t step; SeqStep data; };
+static QueueHandle_t s_step_q = nullptr;
 
 // Секвенсор/арпеджиатор (этап 7): темп-клок + p-lock оверрайды. Живёт на Core 0 (тикается в audio_task,
 // читается pr() в build_synth_params — обе точки в одной задаче, без гонок).
@@ -138,6 +144,40 @@ static void build_synth_params(SynthParams *sp)
     sp->fx.reverb_modrate  = pr(PARAM_REVERB_MODRATE);
 }
 
+// --- Секвенсор: паттерн I/O (этап 7.4). set — из comm (Core 1) через очередь → применяется на Core 0.
+//     get — сериализация текущего паттерна (Core 1 читает s_seq.pattern; тот меняется только дренажом
+//     очереди на Core 0, редко → безопасно на практике для ручных GET/SAVE из GUI). ---
+bool audio_seq_set_step(uint8_t step, const uint8_t *blob, size_t len)
+{
+    if (step >= SEQ_STEPS || !s_step_q) return false;
+    StepUpdate su; su.step = step;
+    if (seq_step_deserialize(blob, len, &su.data) == 0) return false;
+    return xQueueSend(s_step_q, &su, 0) == pdTRUE;
+}
+
+bool audio_seq_set_pattern(const uint8_t *blob, size_t len)
+{
+    if (!s_step_q) return false;
+    SeqStep steps[SEQ_STEPS];
+    if (!seq_deserialize(blob, len, steps)) return false;
+    for (uint8_t s = 0; s < SEQ_STEPS; ++s) {
+        StepUpdate su; su.step = s; su.data = steps[s];
+        xQueueSend(s_step_q, &su, pdMS_TO_TICKS(5));   // ждём место: 16 шагов подряд (очередь 40)
+    }
+    return true;
+}
+
+size_t audio_seq_get_step(uint8_t step, uint8_t *out, size_t cap)
+{
+    if (step >= SEQ_STEPS) return 0;
+    return seq_step_serialize(out, cap, &s_seq.pattern[step]);
+}
+
+size_t audio_seq_get_pattern(uint8_t *out, size_t cap)
+{
+    return seq_serialize(out, cap, s_seq.pattern);
+}
+
 // Аудио-задача на Core 0: генерит блок семплов и блокируется на i2s_channel_write (пока
 // DMA-буфер занят). Так задача сама тактируется скоростью вывода — без vTaskDelay/тика.
 static void audio_task(void *arg)
@@ -163,6 +203,11 @@ static void audio_task(void *arg)
 
     for (;;) {
         const int64_t t_start = esp_timer_get_time();
+
+        // Обновления паттерна из comm (этап 7.4) → применить ДО тика (новый паттерн играет с этого блока).
+        StepUpdate su;
+        while (xQueueReceive(s_step_q, &su, 0) == pdTRUE)
+            if (su.step < SEQ_STEPS) s_seq.pattern[su.step] = su.data;
 
         // Секвенсор/арп (этап 7): продвинуть темп-клок ПЕРЕД сборкой параметров — p-lock активного шага
         // должен уже стоять, когда build_synth_params читает через pr(). Ноты шага/арпа — этап 7.2/7.3.
@@ -421,6 +466,12 @@ void audio_init(void)
     if (!s_note_q) {
         ESP_LOGE(TAG, "не выделить нотную очередь — аудио-задача не запущена, звука не будет");
         return;
+    }
+    // Очередь обновлений паттерна (этап 7.4): глубина 40 — хватает на весь паттерн (16 шагов) + правки.
+    s_step_q = xQueueCreate(40, sizeof(StepUpdate));
+    if (!s_step_q) {
+        ESP_LOGE(TAG, "не выделить очередь паттерна — правки секвенсора из GUI не пройдут");
+        // не фатально: звук и ноты работают, паттерн просто не редактируется по проводу
     }
 
     // 3) Аудио-задача на Core 0 (Core 1 отдан comm/UI). Приоритет выше comm(5): звук важнее.
