@@ -139,6 +139,11 @@ constexpr ParamDef kParams[] = {
     { PARAM_ARP_OCTAVES, "arp_octaves", PARAM_TYPE_INT,     1.0f,    4.0f,    1.0f },
     { PARAM_ARP_RATE,    "arp_rate",    PARAM_TYPE_ENUM,    0.0f,    3.0f,    2.0f },
     { PARAM_ARP_HOLD,    "arp_hold",    PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    // этап 12 — типы осцилляторов
+    { PARAM_OSC1_TYPE,   "osc1_type",   PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
+    { PARAM_OSC2_TYPE,   "osc2_type",   PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
+    { PARAM_OSC3_TYPE,   "osc3_type",   PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
+    { PARAM_PD_AMOUNT,   "pd_amount",   PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.0f },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

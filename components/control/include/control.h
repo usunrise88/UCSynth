@@ -140,6 +140,11 @@ typedef enum {
     PARAM_ARP_OCTAVES  = 94, // диапазон октав арпа (1..4)
     PARAM_ARP_RATE     = 95, // деление клока: 0=1/4 1=1/8 2=1/16 3=1/32 (enum)
     PARAM_ARP_HOLD     = 96, // арп hold/latch (bool)
+    // --- этап 12: типы осцилляторов (Classic — тип на слот; FM/Karplus — движки голоса) ---
+    PARAM_OSC1_TYPE    = 97,  // тип слота 1: 0 wavetable / 1 VA / 2 phase-distortion (enum)
+    PARAM_OSC2_TYPE    = 98,
+    PARAM_OSC3_TYPE    = 99,
+    PARAM_PD_AMOUNT    = 100, // глубина phase-distortion, общая для PD-слотов 0..1 (float)
     PARAM_COUNT
 } param_id_t;
 

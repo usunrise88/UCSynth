@@ -706,3 +706,19 @@ delay/reverb с обратной связью (и `fixedgain=0.015` ревера
   (`TestSeqTabPatternBrowser`). `run-app-tests.sh` (go + кросс-Windows) и 17 host-наборов зелёные.
 - **Этап 7 (секвенсор/арп/p-locks) собран целиком.** Приёмка на железе — за пользователем (см. план: паттерн
   без ПК-клока, p-lock на шаге, арп из зажатых нот, ребут+загрузка). Дальше — часть II, этап 12 (типы осц).
+
+### 2026-08-02 — этап 12.1/12.2: типы осц-слота — VirtualAnalog (PolyBLEP) + Phase Distortion (сборка) 🔨
+Classic-движок получил тип на слот (гибридная модель spec.md:32-41). Сначала два слот-типа; FM/Karplus — 12.3/12.4.
+- **Чистый модуль** `osc_types.{h,cpp}` (host-тестируем, без ESP-IDF): `va_sample(wave, phase, dt)` — **PolyBLEP**
+  пила/меандр (антиалиасинг разрывов; `dt=inc` — ширина коррекции), треугольник наивный (D-024), sine прямой;
+  `pd_warp(phase, amount)` — Casio-CZ варп фазы. Известные алгоритмы (Välimäki), не изобретаем.
+- **`voice.h`:** `OscType {WAVETABLE, VA, PD}`, `OscSlot.type` (в конец — старые 3-полевые brace-init
+  зануляют type=wavetable, поведение сохранено), `VoiceParams.pd_amount`. **`voice.cpp` осц-цикл:** три
+  тернара `wavetable_sample` → диспетчер `osc_slot_sample(type,…)`: WAVETABLE (морф как был) / VA / PD
+  (`wavetable_sample(WAVE_SINE, pd_warp(...))`). `need*`-скипы и ring работают как есть.
+- **Реестр (id 97..100):** `osc1/2/3_type` (ENUM 0..2), `pd_amount` (FLOAT 0..1). Читаются в
+  `build_synth_params` (`audio.cpp:95-98`). PARAM_COUNT 97→101. `static_assert`'ы держат порядок.
+- **Тест** `test_osc_types.cpp` (OUT18): VA-пила спектр 1/k, меандр нечётный (2-я≈0), **PolyBLEP снижает
+  алиасинг вдвое+ против наивной пилы на высокой ноте** (DFT-метрика мощности вне гармоник), границы выхода,
+  PD amount=0→чистый sine / >0→ярче (3-я гармоника). 18 host-наборов зелёные. Правка `test_protocol` (bad-id
+  → `PARAM_COUNT`, т.к. id 99 стал валидным). **CPU VA/PD на железе — за пользователем.**

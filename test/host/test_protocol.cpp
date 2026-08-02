@@ -188,7 +188,9 @@ int main() {
 
     // --- GET неверный id ---
     {
-        auto s = run({ CMD_GET, 0x63, 0x00 });  // id=99
+        // PARAM_COUNT — всегда первый несуществующий id (растёт с реестром), в отличие от литерала,
+        // который становился валидным при добавлении параметров (этап 12 сделал id 99 реальным).
+        auto s = run({ CMD_GET, (uint8_t)(PARAM_COUNT & 0xFF), (uint8_t)(PARAM_COUNT >> 8) });
         CHECK(s.frames[0][0] == RSP_ERR && s.frames[0][1] == ERR_BAD_ID, "GET bad id -> ERR_BAD_ID");
     }
 

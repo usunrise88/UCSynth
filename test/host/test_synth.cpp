@@ -14,9 +14,9 @@ static const float SR = 48000.0f;
 static SynthParams defsp(int poly, float glide, bool legato)
 {
     SynthParams sp{};
-    sp.voice.osc[0] = { 0, 0.0f, 1.0f };            // sine — стабильный уровень для замеров
-    sp.voice.osc[1] = { 0, 0.0f, 0.0f };
-    sp.voice.osc[2] = { 0, 0.0f, 0.0f };
+    sp.voice.osc[0] = { 0, 0.0f, 1.0f, OSC_WAVETABLE };            // sine — стабильный уровень для замеров
+    sp.voice.osc[1] = { 0, 0.0f, 0.0f, OSC_WAVETABLE };
+    sp.voice.osc[2] = { 0, 0.0f, 0.0f, OSC_WAVETABLE };
     sp.voice.noise_level = 0.0f; sp.voice.ring_level = 0.0f;
     sp.voice.cutoff_hz = 20000.0f; sp.voice.resonance = 0.0f;
     sp.voice.filt_mode = FILT_LP; sp.voice.flt_env_amt = 0.0f;

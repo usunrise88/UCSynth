@@ -57,6 +57,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/audio/src" \
     "$ROOT/test/host/test_voice.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
     "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
@@ -72,6 +73,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$ROOT/test/host/test_synth.cpp" \
     "$ROOT/components/audio/src/synth.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
     "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
@@ -96,6 +98,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/audio/src" \
     "$ROOT/test/host/test_matrix.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
     "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
@@ -194,3 +197,14 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT17"
 
 "$OUT17"
+
+# Тест osc_types (этап 12.1/12.2 — VA/PolyBLEP спектр+анти-алиасинг, Phase Distortion).
+OUT18="$(mktemp -d)/osctypestest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_osc_types.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT18"
+
+"$OUT18"

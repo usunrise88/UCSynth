@@ -1,5 +1,6 @@
 #include "voice.h"
 #include "wavetable.h"
+#include "osc_types.h"
 #include "dsp_hot.h"
 #include <cmath>
 
@@ -17,6 +18,19 @@ inline float noise_next(uint32_t &s)
 {
     s ^= s << 13; s ^= s >> 17; s ^= s << 5;
     return (float)s * 4.6566129e-10f - 1.0f;
+}
+
+// Один осц-слот Classic-движка: диспетчер по типу (этап 12). Wavetable сохраняет прежнее поведение
+// (морф по wave-позиции); VA — PolyBLEP по фазе и inc (ширина коррекции); PD — синус искажённой фазы.
+inline float osc_slot_sample(const OscSlot &o, float pos, bool morph,
+                             float phase, float inc, int mip, float pd)
+{
+    switch (o.type) {
+    case OSC_VA: return va_sample(o.wave, phase, inc);
+    case OSC_PD: return wavetable_sample(WAVE_SINE, pd_warp(phase, pd), mip);
+    default:     return morph ? wavetable_sample_morph(pos, phase, mip)
+                              : wavetable_sample(o.wave, phase, mip);
+    }
 }
 }  // namespace
 
@@ -145,12 +159,9 @@ void AUDIO_HOT voice_render(Voice *v, const VoiceParams *p, float sr, float *out
     const float qinv     = 1.0f / q;
 
     for (int i = 0; i < n; ++i) {
-        const float o0 = need0 ? (morph ? wavetable_sample_morph(pos0, v->phase[0], mip[0])
-                                        : wavetable_sample(p->osc[0].wave, v->phase[0], mip[0])) : 0.0f;
-        const float o1 = need1 ? (morph ? wavetable_sample_morph(pos1, v->phase[1], mip[1])
-                                        : wavetable_sample(p->osc[1].wave, v->phase[1], mip[1])) : 0.0f;
-        const float o2 = need2 ? (morph ? wavetable_sample_morph(pos2, v->phase[2], mip[2])
-                                        : wavetable_sample(p->osc[2].wave, v->phase[2], mip[2])) : 0.0f;
+        const float o0 = need0 ? osc_slot_sample(p->osc[0], pos0, morph, v->phase[0], inc[0], mip[0], p->pd_amount) : 0.0f;
+        const float o1 = need1 ? osc_slot_sample(p->osc[1], pos1, morph, v->phase[1], inc[1], mip[1], p->pd_amount) : 0.0f;
+        const float o2 = need2 ? osc_slot_sample(p->osc[2], pos2, morph, v->phase[2], inc[2], mip[2], p->pd_amount) : 0.0f;
 
         float mix = o0 * p->osc[0].level + o1 * p->osc[1].level + o2 * p->osc[2].level;
         if (need_noise) mix += noise_next(v->rng) * p->noise_level;
