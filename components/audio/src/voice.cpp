@@ -1,5 +1,6 @@
 #include "voice.h"
 #include "wavetable.h"
+#include "osc_types.h"
 #include "dsp_hot.h"
 #include <cmath>
 
@@ -18,6 +19,19 @@ inline float noise_next(uint32_t &s)
     s ^= s << 13; s ^= s >> 17; s ^= s << 5;
     return (float)s * 4.6566129e-10f - 1.0f;
 }
+
+// Один осц-слот Classic-движка: диспетчер по типу (этап 12). Wavetable сохраняет прежнее поведение
+// (морф по wave-позиции); VA — PolyBLEP по фазе и inc (ширина коррекции); PD — синус искажённой фазы.
+inline float osc_slot_sample(const OscSlot &o, float pos, bool morph,
+                             float phase, float inc, int mip, float pd)
+{
+    switch (o.type) {
+    case OSC_VA: return va_sample(o.wave, phase, inc);
+    case OSC_PD: return wavetable_sample(WAVE_SINE, pd_warp(phase, pd), mip);
+    default:     return morph ? wavetable_sample_morph(pos, phase, mip)
+                              : wavetable_sample(o.wave, phase, mip);
+    }
+}
 }  // namespace
 
 void voice_init(Voice *v, uint32_t seed)
@@ -34,6 +48,12 @@ void voice_init(Voice *v, uint32_t seed)
     v->rng        = seed ? seed : 0x1234567u;
     v->amp_prev   = 0.0f;
     v->velocity   = 1.0f;                   // до первого note-on — полная (нейтрально для матрицы)
+    v->ks_len     = 0;
+    v->ks_pos     = 0;
+    v->ks_last    = 0.0f;
+    v->ks_excite  = false;
+    // ks_buf намеренно НЕ зануляем (48 КБ на голос): он валиден только после excite, который его
+    // заполняет целиком; до первого KS-note-on его никто не читает.
 }
 
 void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch, bool glide)
@@ -47,6 +67,7 @@ void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch, bool glide)
     env_trigger(&v->env_amp);                // ретригер ОБЕИХ огибающих
     env_trigger(&v->env_flt);
     waveenv_reset(&v->env_wave);             // wave-огибающая стартует заново на note-on
+    v->ks_excite = true;                     // взвести щипок Karplus (потребляет только KS-путь)
 }
 
 void voice_slide(Voice *v, uint8_t note, bool glide)
@@ -144,38 +165,81 @@ void AUDIO_HOT voice_render(Voice *v, const VoiceParams *p, float sr, float *out
     const float q        = p->lofi ? exp2f((float)(p->lofi_bits - 1)) : 1.0f;
     const float qinv     = 1.0f / q;
 
-    for (int i = 0; i < n; ++i) {
-        const float o0 = need0 ? (morph ? wavetable_sample_morph(pos0, v->phase[0], mip[0])
-                                        : wavetable_sample(p->osc[0].wave, v->phase[0], mip[0])) : 0.0f;
-        const float o1 = need1 ? (morph ? wavetable_sample_morph(pos1, v->phase[1], mip[1])
-                                        : wavetable_sample(p->osc[1].wave, v->phase[1], mip[1])) : 0.0f;
-        const float o2 = need2 ? (morph ? wavetable_sample_morph(pos2, v->phase[2], mip[2])
-                                        : wavetable_sample(p->osc[2].wave, v->phase[2], mip[2])) : 0.0f;
-
-        float mix = o0 * p->osc[0].level + o1 * p->osc[1].level + o2 * p->osc[2].level;
-        if (need_noise) mix += noise_next(v->rng) * p->noise_level;
-        if (need_ring)  mix += (o0 * o1) * p->ring_level;   // ring mod = осц1×осц2 (raw, до уровней)
-
+    // Тракт после генератора — общий для всех движков: фильтр → soft-clip → VCA → (lo-fi) → out.
+    // Заворот фаз через floorf, а не одним вычитанием: при inc > 1 (частота выше sample rate) вычесть
+    // единицу недостаточно, фаза растёт со скоростью inc−1 и не возвращается в [0,1); дальше теряется
+    // точность float (на ~1.7e7 дробная часть залипает — тишина), а выше 2^31 конверсия (int)phase — UB.
+    auto emit = [&](float mix, int i) {
         float y = filter_process(&v->filt, mix, &fc);
         y = y / (1.0f + fabsf(y));                  // soft-clip: headroom под сумму голосов (3.5)
-
         float s = y * amp;
         if (p->lofi) {                              // bit-crush (клампим, потом квантуем)
             if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
             s = roundf(s * q) * qinv;
         }
         out[i] = s;
-
         amp += amp_step;
-        // Заворот через floorf, а не одним вычитанием: при inc > 1 (частота выше sample rate)
-        // вычесть единицу недостаточно, фаза растёт со скоростью inc−1 и уже не возвращается в
-        // [0,1). Дальше теряется точность float — на ~1.7e7 ulp равен 2, дробная часть залипает и
-        // осциллятор отдаёт константу (тишина), а выше 2^31 конверсия (int)phase — UB. Кламп
-        // pitch-модуляции выше делает inc > 1 недостижимым штатно, но заворот должен быть верен
-        // сам по себе: это состояние живёт всю жизнь ноты и деградирует необратимо.
-        v->phase[0] += inc[0]; v->phase[0] -= floorf(v->phase[0]);   // фазы всегда двигаем
-        v->phase[1] += inc[1]; v->phase[1] -= floorf(v->phase[1]);   //   (свободнобегущие)
-        v->phase[2] += inc[2]; v->phase[2] -= floorf(v->phase[2]);
+    };
+
+    if (p->engine == ENG_FM) {
+        // 2-оператора (этап 12.3): несущая (phase[0], высота ноты) + модулятор (phase[1], ratio·несущая),
+        // фазовая модуляция (PM ≈ FM). Индекс — глубина. Тракт голоса (фильтр/VCA) сохраняется.
+        const float inc_c = inc[0];
+        const float inc_m = inc[0] * p->fm_ratio;
+        const int   mp    = mip[0];
+        for (int i = 0; i < n; ++i) {
+            const float m = wavetable_sample(WAVE_SINE, v->phase[1], mp);
+            float cph = v->phase[0] + p->fm_index * m;
+            cph -= floorf(cph);
+            emit(wavetable_sample(WAVE_SINE, cph, mp), i);
+            v->phase[0] += inc_c; v->phase[0] -= floorf(v->phase[0]);
+            v->phase[1] += inc_m; v->phase[1] -= floorf(v->phase[1]);
+        }
+    } else if (p->engine == ENG_KS) {
+        // Karplus-Strong (этап 12.4): шум-берст → линия задержки (длина = sr/freq) + one-pole в петле.
+        // Возбуждение на note-on (ks_excite): заполняем буфер шумом, окрашенным ks_pluck (0=тускло,
+        // 1=ярко). Известный алгоритм (не изобретаем).
+        if (v->ks_excite) {
+            int len = (int)(sr / note_hz + 0.5f);
+            if (len < 2) len = 2; else if (len > KS_MAX) len = KS_MAX;   // питч-пол = sr/KS_MAX
+            const float bright = 0.2f + 0.8f * p->ks_pluck;              // сглаживание берста (тембр щипка)
+            float e = 0.0f;
+            for (int k = 0; k < len; ++k) {
+                const float nz = noise_next(v->rng);
+                e += (nz - e) * bright;                                  // one-pole ФНЧ на возбуждении
+                v->ks_buf[k] = e;
+            }
+            v->ks_len = len; v->ks_pos = 0; v->ks_last = 0.0f;
+            v->ks_excite = false;
+        }
+        if (v->ks_len < 2) v->ks_len = 2;   // страховка (excite не пришёл — не делим на 0/не залипаем)
+        const float damp  = p->ks_damp;
+        const float decay = p->ks_decay;
+        for (int i = 0; i < n; ++i) {
+            const float s   = v->ks_buf[v->ks_pos];
+            const float avg = 0.5f * (s + v->ks_last);                  // ФНЧ петли обратной связи
+            const float filt = s + (avg - s) * damp;                    // damp: 0 ярко … 1 глухо
+            v->ks_buf[v->ks_pos] = filt * decay;                        // спад струны
+            v->ks_last = filt;
+            emit(s, i);
+            if (++v->ks_pos >= v->ks_len) v->ks_pos = 0;
+        }
+    } else {
+        // Classic: 3 осц-слота (тип на слот) → микшер (+шум +ring).
+        for (int i = 0; i < n; ++i) {
+            const float o0 = need0 ? osc_slot_sample(p->osc[0], pos0, morph, v->phase[0], inc[0], mip[0], p->pd_amount) : 0.0f;
+            const float o1 = need1 ? osc_slot_sample(p->osc[1], pos1, morph, v->phase[1], inc[1], mip[1], p->pd_amount) : 0.0f;
+            const float o2 = need2 ? osc_slot_sample(p->osc[2], pos2, morph, v->phase[2], inc[2], mip[2], p->pd_amount) : 0.0f;
+
+            float mix = o0 * p->osc[0].level + o1 * p->osc[1].level + o2 * p->osc[2].level;
+            if (need_noise) mix += noise_next(v->rng) * p->noise_level;
+            if (need_ring)  mix += (o0 * o1) * p->ring_level;   // ring mod = осц1×осц2 (raw, до уровней)
+
+            emit(mix, i);
+            v->phase[0] += inc[0]; v->phase[0] -= floorf(v->phase[0]);   // фазы всегда двигаем
+            v->phase[1] += inc[1]; v->phase[1] -= floorf(v->phase[1]);   //   (свободнобегущие)
+            v->phase[2] += inc[2]; v->phase[2] -= floorf(v->phase[2]);
+        }
     }
     v->amp_prev = amp_target;
 }

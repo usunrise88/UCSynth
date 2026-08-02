@@ -14,33 +14,46 @@ func TestCRCCheckValue(t *testing.T) {
 	}
 }
 
-// Golden frames from docs/serial-protocol.md.
+// Golden frames — FULL literal bytes including the two CRC bytes, mirroring the hex tables in
+// docs/serial-protocol.md and the identical set in test/host/test_protocol.cpp. This is the real
+// cross-anchor T-007 asked for: the CRC bytes here are hardcoded literals computed by an
+// independent reference (not recomputed by CRC16), so a change that flips CRC coverage
+// (LEN+BODY→BODY), CRC byte order, or a field layout fails HERE even though the Go encoder and its
+// own CRC16 would still agree with each other. Keep these three sources byte-identical.
+//
+// If a genuine protocol change lands, update all three (doc + both tests) together — that edit is
+// the point where the wire contract is deliberately re-agreed.
 func TestEncodeGoldenFrames(t *testing.T) {
 	cases := []struct {
 		name string
 		got  []byte
-		// prefix = everything except the trailing 2 CRC bytes (which we recompute+verify)
-		prefix []byte
+		want []byte // complete frame: sync(2) + LEN + BODY + CRC_LE(2)
 	}{
-		{"LIST", ListFrame(), []byte{0x55, 0xAA, 0x01, 0x03}},
-		{"GET id0", GetFrame(0), []byte{0x55, 0xAA, 0x03, 0x02, 0x00, 0x00}},
-		{"SET id0=0.5", SetFrame(0, 0.5), []byte{0x55, 0xAA, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F}},
-		{"STAT", StatFrame(), []byte{0x55, 0xAA, 0x01, 0x06}},
+		{"LIST", ListFrame(), []byte{0x55, 0xAA, 0x01, 0x03, 0x5D, 0x1E}},
+		{"GET id0", GetFrame(0), []byte{0x55, 0xAA, 0x03, 0x02, 0x00, 0x00, 0x7C, 0x71}},
+		{"SET id0=0.5", SetFrame(0, 0.5), []byte{0x55, 0xAA, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0xFB, 0x89}},
+		{"STAT", StatFrame(), []byte{0x55, 0xAA, 0x01, 0x06, 0xF8, 0x4E}},
+		{"NOTE_ON 60,100", NoteOnFrame(60, 100), []byte{0x55, 0xAA, 0x03, 0x04, 0x3C, 0x64, 0x06, 0xAF}},
+		{"NOTE_OFF 60", NoteOffFrame(60), []byte{0x55, 0xAA, 0x02, 0x05, 0x3C, 0xD6, 0xAA}},
+		{"VALUE 0.8", ValueRespFrame(0, 0.8), []byte{0x55, 0xAA, 0x07, 0x81, 0x00, 0x00, 0xCD, 0xCC, 0x4C, 0x3F, 0x17, 0xB3}},
+		{"empty body", EncodeFrame(nil), []byte{0x55, 0xAA, 0x00, 0xF0, 0xE1}},
 	}
 	for _, c := range cases {
-		if len(c.got) != len(c.prefix)+2 {
-			t.Errorf("%s: frame len %d, want %d", c.name, len(c.got), len(c.prefix)+2)
+		// Encoder must produce the exact bytes, CRC included.
+		if !bytes.Equal(c.got, c.want) {
+			t.Errorf("%s: encoded % X, want % X", c.name, c.got, c.want)
+		}
+		// And our decoder must accept the literal golden bytes and recover the body — proves the
+		// CRC these literals carry is the one our decoder validates against.
+		d := NewDecoder()
+		bodies := d.Push(append([]byte(nil), c.want...))
+		if len(bodies) != 1 {
+			t.Errorf("%s: golden frame decoded into %d bodies, want 1", c.name, len(bodies))
 			continue
 		}
-		if !bytes.Equal(c.got[:len(c.prefix)], c.prefix) {
-			t.Errorf("%s: prefix % X, want % X", c.name, c.got[:len(c.prefix)], c.prefix)
-		}
-		// CRC covers head = LEN+BODY = bytes [2 : len-2]
-		head := c.got[2 : len(c.got)-2]
-		wantCRC := CRC16(head)
-		gotCRC := binary.LittleEndian.Uint16(c.got[len(c.got)-2:])
-		if gotCRC != wantCRC {
-			t.Errorf("%s: CRC 0x%04X, want 0x%04X", c.name, gotCRC, wantCRC)
+		wantBody := c.want[3 : len(c.want)-2]
+		if !bytes.Equal(bodies[0], wantBody) {
+			t.Errorf("%s: decoded body % X, want % X", c.name, bodies[0], wantBody)
 		}
 	}
 }
@@ -114,6 +127,71 @@ func TestEncodeEmptyBody(t *testing.T) {
 	}
 }
 
+// Preset frame builders/parsers round-trip (stage 6). Wire layouts mirror protocol.h / preset.h.
+func TestPresetFrameRoundTrip(t *testing.T) {
+	dec := func(frame []byte) []byte {
+		d := NewDecoder()
+		b := d.Push(frame)
+		if len(b) != 1 {
+			t.Fatalf("decoded %d frames, want 1", len(b))
+		}
+		return b[0]
+	}
+
+	// SAVE new slot with a tree path.
+	body := dec(PresetSaveFrame(PresetSlotNew, "Leads/Saw"))
+	if Opcode(body) != CmdPresetSave || binary.LittleEndian.Uint16(body[1:]) != PresetSlotNew {
+		t.Fatalf("SAVE opcode/slot: %v", body)
+	}
+	if int(body[3]) != len("Leads/Saw") || string(body[4:4+body[3]]) != "Leads/Saw" {
+		t.Fatalf("SAVE path malformed: %v", body)
+	}
+
+	// LOAD / DELETE carry just a slot.
+	for _, tc := range []struct {
+		frame []byte
+		op    byte
+	}{
+		{PresetLoadFrame(7), CmdPresetLoad},
+		{PresetDeleteFrame(7), CmdPresetDelete},
+	} {
+		b := dec(tc.frame)
+		if Opcode(b) != tc.op || binary.LittleEndian.Uint16(b[1:]) != 7 {
+			t.Fatalf("op 0x%02X slot mismatch: %v", tc.op, b)
+		}
+	}
+
+	// RENAME carries slot + path.
+	if b := dec(PresetRenameFrame(3, "Bass/Deep")); Opcode(b) != CmdPresetRename || binary.LittleEndian.Uint16(b[1:]) != 3 {
+		t.Fatalf("RENAME slot: %v", b)
+	}
+
+	// LIST request.
+	if Opcode(dec(PresetListFrame())) != CmdPresetList {
+		t.Fatal("LIST opcode")
+	}
+
+	// Responses: PRESET / PRESET_END / PRESET_SAVED.
+	if p, err := ParsePreset(dec(PresetRespFrame(9, "A/B/C"))); err != nil || p.Slot != 9 || p.Path != "A/B/C" {
+		t.Fatalf("PRESET resp round-trip: %+v err=%v", p, err)
+	}
+	if e, err := ParsePresetEnd(dec(PresetEndFrame(4))); err != nil || e.Count != 4 {
+		t.Fatalf("PRESET_END: %+v err=%v", e, err)
+	}
+	if s, err := ParsePresetSaved(dec(PresetSavedFrame(11))); err != nil || s.Slot != 11 {
+		t.Fatalf("PRESET_SAVED: %+v err=%v", s, err)
+	}
+
+	// Path over PresetPathMax is clamped by the builder (firmware bounds the wire path the same way).
+	long := make([]byte, PresetPathMax+50)
+	for i := range long {
+		long[i] = 'a'
+	}
+	if b := dec(PresetSaveFrame(0, string(long))); int(b[3]) != PresetPathMax {
+		t.Fatalf("long path not clamped: path_len=%d want %d", b[3], PresetPathMax)
+	}
+}
+
 // A bad CRC frame is dropped; a following good frame still decodes.
 func TestDecoderBadCRC(t *testing.T) {
 	bad := StatFrame()
@@ -176,5 +254,65 @@ func TestParseStat(t *testing.T) {
 	}
 	if got != s {
 		t.Fatalf("ParseStat got %+v, want %+v", got, s)
+	}
+}
+
+// Sequencer step codec round-trip (stage 7).
+func TestSeqStepCodecRoundTrip(t *testing.T) {
+	st := SeqStep{Active: true, Notes: []uint8{60, 67}, Velocity: 110, TrigProb: 0.5,
+		Plocks: []SeqPlock{{ID: 20, Val: 1234.5}, {ID: 79, Val: -0.25}}}
+	b := EncodeStep(st)
+	got, n, err := DecodeStep(b)
+	if err != nil || n != len(b) {
+		t.Fatalf("decode step: n=%d len=%d err=%v", n, len(b), err)
+	}
+	if !got.Active || len(got.Notes) != 2 || got.Notes[1] != 67 || got.Velocity != 110 {
+		t.Fatalf("step fields: %+v", got)
+	}
+	if len(got.Plocks) != 2 || got.Plocks[0].ID != 20 || math.Abs(float64(got.Plocks[0].Val-1234.5)) > 0.01 {
+		t.Fatalf("plocks: %+v", got.Plocks)
+	}
+	if got.TrigProb < 0.49 || got.TrigProb > 0.51 {
+		t.Fatalf("trigprob %v", got.TrigProb)
+	}
+	if _, _, err := DecodeStep(b[:1]); err == nil {
+		t.Fatal("truncated step must error")
+	}
+}
+
+// Sequencer frame builders/parsers round-trip (stage 7).
+func TestSeqFrameRoundTrip(t *testing.T) {
+	dec := func(frame []byte) []byte {
+		d := NewDecoder()
+		b := d.Push(frame)
+		if len(b) != 1 {
+			t.Fatalf("decoded %d frames", len(b))
+		}
+		return b[0]
+	}
+	st := SeqStep{Active: true, Notes: []uint8{62}, Velocity: 100, TrigProb: 1}
+	if b := dec(SeqSetStepFrame(5, st)); Opcode(b) != CmdSeqSetStep || b[1] != 5 {
+		t.Fatalf("SET_STEP: %v", b)
+	}
+	if step, gs, err := ParseSeqStep(dec(SeqStepRespFrame(5, st))); err != nil || step != 5 || !gs.Active || gs.Notes[0] != 62 {
+		t.Fatalf("SEQ_STEP resp: step=%d %+v err=%v", step, gs, err)
+	}
+	if Opcode(dec(SeqGetFrame())) != CmdSeqGet {
+		t.Fatal("GET opcode")
+	}
+	if b := dec(SeqSaveFrame(PresetSlotNew, "Beat/A")); Opcode(b) != CmdSeqSave {
+		t.Fatal("SAVE opcode")
+	}
+	if b := dec(SeqLoadFrame(3)); Opcode(b) != CmdSeqLoad || binary.LittleEndian.Uint16(b[1:]) != 3 {
+		t.Fatal("LOAD slot")
+	}
+	if e, err := ParseSeqEntry(dec(SeqEntryFrame(7, "X/Y"))); err != nil || e.Slot != 7 || e.Path != "X/Y" {
+		t.Fatalf("ENTRY: %+v err=%v", e, err)
+	}
+	if c, err := ParseSeqEnd(dec(SeqEndFrame(4))); err != nil || c != 4 {
+		t.Fatalf("END %d", c)
+	}
+	if s, err := ParseSeqSaved(dec(SeqSavedFrame(9))); err != nil || s != 9 {
+		t.Fatalf("SAVED %d", s)
 	}
 }

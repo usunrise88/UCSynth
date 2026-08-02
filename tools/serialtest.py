@@ -178,7 +178,7 @@ def main():
         drain(ser, dec, 0.2)
         time.sleep(0.6)
 
-    step("LIST (реестр — 86 параметров, см. PARAM_COUNT в control.h)", encode(bytes([LIST])))
+    step("LIST (реестр — размер = PARAM_COUNT в control.h, растёт по этапам)", encode(bytes([LIST])))
     step("STAT", encode(bytes([STAT])))
 
     # Тест-тон по умолчанию ВКЛ — тон звучит с загрузки (проверка тракта). Гасим → играют ноты.

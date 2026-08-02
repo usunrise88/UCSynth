@@ -127,6 +127,30 @@ typedef enum {
     PARAM_REVERB_DAMP    = 83, // затухание ВЧ 0..1
     PARAM_REVERB_WIDTH   = 84, // стерео-ширина 0..1
     PARAM_REVERB_MIX     = 85, // wet/dry 0..1
+    // --- этап 6: модуляция длины гребёнок реверба (против металлического звона) ---
+    PARAM_REVERB_MODDEPTH = 86, // глубина модуляции гребёнок 0..1 (0 = выкл, звон как есть)
+    PARAM_REVERB_MODRATE  = 87, // скорость модуляции, Гц
+    // --- этап 7: секвенсор / арпеджиатор (общий темп-клок) ---
+    PARAM_SEQ_BPM      = 88, // темп, BPM (20..300)
+    PARAM_SEQ_SWING    = 89, // свинг 0..1 (сдвиг off-beat 16-х)
+    PARAM_SEQ_PLAYING  = 90, // транспорт play/stop (bool)
+    PARAM_SEQ_ON       = 91, // секвенсор вкл (bool)
+    PARAM_ARP_ON       = 92, // арпеджиатор вкл (bool)
+    PARAM_ARP_MODE     = 93, // режим арпа: 0 up / 1 down / 2 up-down / 3 random (enum)
+    PARAM_ARP_OCTAVES  = 94, // диапазон октав арпа (1..4)
+    PARAM_ARP_RATE     = 95, // деление клока: 0=1/4 1=1/8 2=1/16 3=1/32 (enum)
+    PARAM_ARP_HOLD     = 96, // арп hold/latch (bool)
+    // --- этап 12: типы осцилляторов (Classic — тип на слот; FM/Karplus — движки голоса) ---
+    PARAM_OSC1_TYPE    = 97,  // тип слота 1: 0 wavetable / 1 VA / 2 phase-distortion (enum)
+    PARAM_OSC2_TYPE    = 98,
+    PARAM_OSC3_TYPE    = 99,
+    PARAM_PD_AMOUNT    = 100, // глубина phase-distortion, общая для PD-слотов 0..1 (float)
+    PARAM_VOICE_ENGINE = 101, // движок голоса: 0 Classic / 1 FM / 2 Karplus (enum)
+    PARAM_FM_RATIO     = 102, // FM: отношение частот модулятор/несущая 0.5..8 (float)
+    PARAM_FM_INDEX     = 103, // FM: индекс модуляции 0..10 (float)
+    PARAM_KS_DAMP      = 104, // Karplus: затухание петли (яркость) 0..1 (float)
+    PARAM_KS_DECAY     = 105, // Karplus: спад струны 0.8..0.999 (float)
+    PARAM_KS_PLUCK     = 106, // Karplus: характер щипка (тембр берста) 0..1 (float)
     PARAM_COUNT
 } param_id_t;
 

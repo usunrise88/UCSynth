@@ -9,10 +9,14 @@ OUT="$(mktemp -d)/ptest"
 g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/control/include" \
     -I "$ROOT/components/comm/include" \
+    -I "$ROOT/components/preset/include" \
+    -I "$ROOT/components/audio/src" \
     "$ROOT/test/host/test_protocol.cpp" \
     "$ROOT/components/control/src/control.cpp" \
     "$ROOT/components/comm/src/protocol.cpp" \
     "$ROOT/components/comm/src/frame.cpp" \
+    "$ROOT/components/preset/src/preset_codec.cpp" \
+    "$ROOT/components/audio/src/seq_codec.cpp" \
     -o "$OUT"
 
 "$OUT"
@@ -53,6 +57,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/audio/src" \
     "$ROOT/test/host/test_voice.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
     "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
@@ -68,6 +73,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$ROOT/test/host/test_synth.cpp" \
     "$ROOT/components/audio/src/synth.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
     "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
@@ -92,6 +98,7 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$ROOT/components/audio/src" \
     "$ROOT/test/host/test_matrix.cpp" \
     "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
     "$ROOT/components/audio/src/env.cpp" \
     "$ROOT/components/audio/src/waveenv.cpp" \
     "$ROOT/components/audio/src/filter.cpp" \
@@ -158,3 +165,61 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT14"
 
 "$OUT14"
+
+# Тест preset (этап 6 — кодек пресетов: round-trip, путь, сброс-в-дефолт, транзиентные, гарды).
+OUT15="$(mktemp -d)/presettest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/control/include" \
+    -I "$ROOT/components/preset/include" \
+    "$ROOT/test/host/test_preset.cpp" \
+    "$ROOT/components/preset/src/preset_codec.cpp" \
+    "$ROOT/components/control/src/control.cpp" \
+    -o "$OUT15"
+
+"$OUT15"
+
+# Тест seq (этап 7.1–7.3 — темп-клок, паттерн+p-locks, арпеджиатор).
+OUT16="$(mktemp -d)/seqtest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_seq.cpp" \
+    "$ROOT/components/audio/src/seq_engine.cpp" \
+    -o "$OUT16"
+
+"$OUT16"
+
+# Тест seq_codec (этап 7.4 — кодек паттерна: round-trip, p-locks, гарды).
+OUT17="$(mktemp -d)/seqcodectest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_seq_codec.cpp" \
+    "$ROOT/components/audio/src/seq_codec.cpp" \
+    -o "$OUT17"
+
+"$OUT17"
+
+# Тест osc_types (этап 12.1/12.2 — VA/PolyBLEP спектр+анти-алиасинг, Phase Distortion).
+OUT18="$(mktemp -d)/osctypestest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_osc_types.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT18"
+
+"$OUT18"
+
+# Тест engines (этап 12.3/12.4 — FM 2-оп спектр/боковые, Karplus затухание/питч).
+OUT19="$(mktemp -d)/enginestest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_engines.cpp" \
+    "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
+    "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
+    "$ROOT/components/audio/src/filter.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT19"
+
+"$OUT19"

@@ -77,3 +77,84 @@ func TestErroredOnConnClose(t *testing.T) {
 		t.Fatal("expected an error recorded on connection loss")
 	}
 }
+
+func TestPresetFlow(t *testing.T) {
+	c1, c2 := net.Pipe()
+	fake := NewFake(c2, testRegistry(), proto.Stat{})
+	go fake.Run()
+
+	d := New(c1, nil)
+	d.Start()
+	defer d.Close()
+	waitFor(t, "Synced", func() bool { return d.Snapshot().State == Synced })
+
+	// Move a param, wait for the echo, then save the registry as a new preset in a tree path.
+	d.SetParam(0, 0.3)
+	waitFor(t, "master_volume=0.3", func() bool { p, _ := d.Snapshot().Param(0); return p.Cur == 0.3 })
+	d.PresetSave(proto.PresetSlotNew, "Leads/Test")
+	waitFor(t, "preset listed", func() bool {
+		ps := d.Snapshot().Presets
+		return len(ps) == 1 && ps[0].Slot == 0 && ps[0].Path == "Leads/Test"
+	})
+
+	// Change the param, then load → device re-LISTs → cur restored from the preset.
+	d.SetParam(0, 0.9)
+	waitFor(t, "master_volume=0.9", func() bool { p, _ := d.Snapshot().Param(0); return p.Cur == 0.9 })
+	d.PresetLoad(0)
+	waitFor(t, "load restored 0.3", func() bool { p, _ := d.Snapshot().Param(0); return p.Cur == 0.3 })
+
+	// Rename moves it in the tree (values untouched).
+	d.PresetRename(0, "Bass/Test")
+	waitFor(t, "renamed", func() bool {
+		ps := d.Snapshot().Presets
+		return len(ps) == 1 && ps[0].Path == "Bass/Test"
+	})
+
+	// Loading an empty slot surfaces ERR_NO_PRESET.
+	d.PresetLoad(99)
+	waitFor(t, "ERR_NO_PRESET", func() bool { return d.Snapshot().LastErr == proto.ErrNoPreset })
+
+	// Delete empties the directory.
+	d.PresetDelete(0)
+	waitFor(t, "deleted", func() bool { return len(d.Snapshot().Presets) == 0 })
+}
+
+func TestSeqPatternFlow(t *testing.T) {
+	c1, c2 := net.Pipe()
+	fake := NewFake(c2, testRegistry(), proto.Stat{})
+	go fake.Run()
+
+	d := New(c1, nil)
+	d.Start()
+	defer d.Close()
+	waitFor(t, "Synced", func() bool { return d.Snapshot().State == Synced })
+
+	// Upload a step, GET → live pattern reflects it.
+	d.SeqSetStep(3, proto.SeqStep{Active: true, Notes: []uint8{62}, Velocity: 100, TrigProb: 1})
+	d.SeqGet()
+	waitFor(t, "step 3 uploaded", func() bool {
+		st := d.Snapshot().SeqPattern[3]
+		return st.Active && len(st.Notes) == 1 && st.Notes[0] == 62
+	})
+
+	// Save → appears in the pattern directory.
+	d.SeqSave(proto.PresetSlotNew, "Beats/One")
+	waitFor(t, "pattern listed", func() bool {
+		ps := d.Snapshot().Patterns
+		return len(ps) == 1 && ps[0].Slot == 0 && ps[0].Path == "Beats/One"
+	})
+
+	// Overwrite the step, then load → restored + GET refreshes.
+	d.SeqSetStep(3, proto.SeqStep{})
+	d.SeqGet()
+	waitFor(t, "step 3 cleared", func() bool { return !d.Snapshot().SeqPattern[3].Active })
+	d.SeqLoad(0)
+	waitFor(t, "load restored step 3", func() bool {
+		st := d.Snapshot().SeqPattern[3]
+		return st.Active && len(st.Notes) == 1 && st.Notes[0] == 62
+	})
+
+	// Delete empties the directory.
+	d.SeqDelete(0)
+	waitFor(t, "pattern deleted", func() bool { return len(d.Snapshot().Patterns) == 0 })
+}

@@ -42,6 +42,11 @@ var smokeParams = []proto.Param{
 	{ID: 25, Name: "mtx2_src", Type: proto.TypeEnum, Min: 0, Max: 7, Cur: 0},
 	{ID: 26, Name: "mtx2_dst", Type: proto.TypeEnum, Min: 0, Max: 6, Cur: 0},
 	{ID: 27, Name: "mtx2_depth", Type: proto.TypeFloat, Min: -1, Max: 1, Cur: 0},
+	// этап 12 — типы осц + движки (тип-слота как ENUM-сегмент, движок-блок как кнобы)
+	{ID: 28, Name: "osc1_type", Type: proto.TypeEnum, Min: 0, Max: 2, Cur: 1},
+	{ID: 29, Name: "voice_engine", Type: proto.TypeEnum, Min: 0, Max: 2, Cur: 0},
+	{ID: 30, Name: "fm_ratio", Type: proto.TypeFloat, Min: 0.5, Max: 8, Cur: 1},
+	{ID: 31, Name: "ks_decay", Type: proto.TypeFloat, Min: 0.8, Max: 0.999, Cur: 0.99},
 }
 
 // TestUnlistedBlocksCatchAll pins the rack catch-all: a block with controls that isn't in rackCols

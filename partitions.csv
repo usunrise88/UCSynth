@@ -1,9 +1,11 @@
 # Карта разделов ESP32-S3-N16R8 (16 МБ flash). Смещения — авто (пусто = следом за предыдущим).
 # Один app-раздел (factory): OTA не в скоупе, прошивка локальная через esptool.
-# storage зарезервирован под wavetable-банки (этап 1) и пресеты (этап 6);
-#   подтип (spiffs/littlefs/fat) финализируем на этапе 6 — см. tech-debt.md.
+# presets — пользовательские пресеты (этап 6), K-V в NVS (мелкие частые записи, износ/потеря питания
+#   решены штатно). storage — под wavetable-банки (этап 1); подтип ФС финализируем там (см. tech-debt T-001).
+# Итого: 24K+4K+4M+256K+8M ≈ 12.28 МБ из 16 → ~3.7 МБ ещё свободно.
 # Name,     Type, SubType,  Offset,  Size,  Flags
 nvs,        data, nvs,      ,        24K,
 phy_init,   data, phy,      ,        4K,
 factory,    app,  factory,  ,        4M,
+presets,    data, nvs,      ,        256K,
 storage,    data, spiffs,   ,        8M,

@@ -24,6 +24,8 @@ struct FxParams {
     float reverb_damp;   // 0..1 затухание ВЧ в гребёнках
     float reverb_width;  // 0..1 стерео-ширина
     float reverb_mix;    // 0..1 wet/dry
+    float reverb_moddepth; // 0..1 глубина модуляции длины гребёнок (0 = выкл → звон как есть, дефолт)
+    float reverb_modrate;  // Гц скорость модуляции (медленный LFO на каждую гребёнку)
 };
 
 // Freeverb (Schroeder/Moorer): 8 гребёнок + 4 allpass на канал. Готовый алгоритм (роадмап «бери готовое»).
@@ -34,6 +36,7 @@ struct Comb {    // гребёнка с затуханием ВЧ (one-pole LP �
     float *buf;
     int    len, idx;
     float  store;
+    float  mod_phase;   // фаза LFO модуляции длины гребёнки [0,1) (этап 6: comb-mod против звона)
 };
 struct Allpass { // allpass (фикс. feedback 0.5)
     float *buf;

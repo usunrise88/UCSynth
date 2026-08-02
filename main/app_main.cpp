@@ -16,11 +16,15 @@
 #include "esp_psram.h"
 #endif
 
+#include "nvs_flash.h"
+
 #include "audio.h"
 #include "comm.h"
 #include "control.h"
 #include "display.h"
 #include "io.h"
+#include "preset_store.h"
+#include "seq_store.h"
 
 static const char *TAG = "ucsynth";
 
@@ -112,6 +116,25 @@ extern "C" void app_main(void)
     // практике, но это была гонка. Теперь очередь готова до появления читателя.
 
     control_init();  // реестр параметров            (этап 0.2)
+
+    // Хранилище пресетов (этап 6): свой NVS-раздел "presets" (не системный nvs). Инициализируем ПОСЛЕ
+    // control (пресеты читают/пишут реестр), ДО comm (первый CMD_PRESET_* уже найдёт хранилище готовым).
+    // Сбой не фатален — синт работает без сохранения (пресеты просто не грузятся/не пишутся).
+    esp_err_t nvs_err = nvs_flash_init_partition("presets");
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS 'presets' требует erase (%s) — стираю и переинициализирую", esp_err_to_name(nvs_err));
+        if (nvs_flash_erase_partition("presets") == ESP_OK) {   // сбой erase не фатален — просто без пресетов
+            nvs_err = nvs_flash_init_partition("presets");
+        }
+    }
+    if (nvs_err == ESP_OK) {
+        preset_store_init();
+        seq_store_init();   // паттерны секвенсора (этап 7) — свой namespace в том же разделе
+    } else {
+        ESP_LOGE(TAG, "NVS 'presets' init: %s — пресеты недоступны (синт работает без сохранения)",
+                 esp_err_to_name(nvs_err));
+    }
+
     audio_init();    // I2S + DMA + DSP на Core 0     (этап 1)
     init_core1_peripherals();
 

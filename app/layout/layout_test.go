@@ -85,6 +85,29 @@ func TestEnumLabel(t *testing.T) {
 	}
 }
 
+func TestStage12OscTypesAndEngine(t *testing.T) {
+	// тип осц-слота — в блоке своего осц, с 3 подписями (Wavetable/VA/Phase Dist)
+	for i, blk := range []string{"osc1", "osc2", "osc3"} {
+		name := "osc" + strconv.Itoa(i+1) + "_type"
+		if f := For(name); f.Block != blk || len(f.EnumLabels) != 3 {
+			t.Fatalf("%s → %+v, want %s with 3 type labels", name, f, blk)
+		}
+	}
+	// движок голоса — блок engine, 3 подписи (Classic/FM/Karplus)
+	if f := For("voice_engine"); f.Block != "engine" || len(f.EnumLabels) != 3 {
+		t.Fatalf("voice_engine → %+v, want engine with 3 labels", f)
+	}
+	if For("voice_engine").EnumLabel(2) != "Karplus" {
+		t.Fatalf("engine enum 2 = %q, want Karplus", For("voice_engine").EnumLabel(2))
+	}
+	// FM/KS/PD-скаляры — блок engine, обычные кнобы
+	for _, name := range []string{"pd_amount", "fm_ratio", "fm_index", "ks_damp", "ks_decay", "ks_pluck"} {
+		if f := For(name); f.Block != "engine" || f.EnumLabels != nil {
+			t.Fatalf("%s → %+v, want engine plain knob", name, f)
+		}
+	}
+}
+
 func TestBlockTitle(t *testing.T) {
 	if BlockTitle("filter") != "Фильтр" {
 		t.Fatal("block title lookup failed")

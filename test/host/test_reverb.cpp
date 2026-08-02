@@ -93,6 +93,56 @@ int main()
         check(a[0] == 0.4f && a[1] == 0.6f, "малый буфер → реверб отключён (dry)");
     }
 
+    // --- модуляция длины гребёнок (этап 6): устойчивость модулированной ОС, реально меняет хвост,
+    //     и moddepth=0 → бит-в-бит как без модуляции (regression-гард «шарма» текущего ревера) ---
+    {
+        float *buf2 = (float *)malloc(nbuf * sizeof(float));
+        FxState fplain{}, fmod{};
+        fx_reverb_init(&fplain, buf,  nbuf);
+        fx_reverb_init(&fmod,   buf2, nbuf);
+        FxParams pp{}; pp.reverb_on = true; pp.reverb_size = 0.8f; pp.reverb_damp = 0.2f; pp.reverb_width = 1.0f; pp.reverb_mix = 1.0f;
+        FxParams pm = pp; pm.reverb_moddepth = 0.8f; pm.reverb_modrate = 2.0f;   // выраженная модуляция
+
+        float lp[64], rp[64], lm[64], rm[64];
+        double diff = 0.0, e_early_m = 0.0, e_late_m = 0.0;
+        bool fin_m = true; float mx_m = 0.0f;
+        const int bl = 48000 * 2 / N;   // ~2 с
+        for (int b = 0; b < bl; ++b) {
+            for (int i = 0; i < N; ++i) { const float v = (b == 0 && i == 0) ? 1.0f : 0.0f; lp[i] = rp[i] = v; lm[i] = rm[i] = v; }
+            fx_reverb(&fplain, &pp, lp, rp, N);
+            fx_reverb(&fmod,   &pm, lm, rm, N);
+            double be = 0.0;
+            for (int i = 0; i < N; ++i) {
+                diff += std::fabs((double)lm[i] - lp[i]) + std::fabs((double)rm[i] - rp[i]);
+                if (!std::isfinite(lm[i]) || !std::isfinite(rm[i])) fin_m = false;
+                be += (double)lm[i] * lm[i] + (double)rm[i] * rm[i];
+                const float a = std::fabs(lm[i]); if (a > mx_m) mx_m = a;
+            }
+            const double t = (double)(b * N) / 48000.0;
+            if (t < 0.5)                  e_early_m += be;
+            else if (t >= 1.0 && t < 1.5) e_late_m  += be;
+        }
+        check(fin_m, "мод: без NaN/inf (устойчивость модулированной ОС)");
+        check(mx_m < 10.0f, "мод: выход ограничен");
+        check(e_late_m < e_early_m, "мод: хвост затухает (early > late)");
+        check(diff > 0.1, "мод: moddepth>0 реально меняет хвост (отличие от немодулированного)");
+
+        // moddepth=0 при НЕнулевом modrate → гейт модуляции выключен → выход не меняется ни на бит
+        FxState fp2{}, fz{};
+        fx_reverb_init(&fp2, buf,  nbuf);
+        fx_reverb_init(&fz,  buf2, nbuf);
+        FxParams pz = pp; pz.reverb_moddepth = 0.0f; pz.reverb_modrate = 3.0f;
+        bool same = true;
+        for (int b = 0; b < 400 && same; ++b) {
+            for (int i = 0; i < N; ++i) { const float v = (b == 0 && i == 0) ? 1.0f : 0.0f; lp[i] = rp[i] = v; lm[i] = rm[i] = v; }
+            fx_reverb(&fp2, &pp, lp, rp, N);
+            fx_reverb(&fz,  &pz, lm, rm, N);
+            for (int i = 0; i < N; ++i) if (lp[i] != lm[i] || rp[i] != rm[i]) same = false;
+        }
+        check(same, "moddepth=0 → бит-в-бит как без модуляции (opt-out гейт игнорирует modrate)");
+        free(buf2);
+    }
+
     free(buf);
     if (g_fail == 0) printf("OK: reverb — все проверки пройдены\n");
     return g_fail ? 1 : 0;

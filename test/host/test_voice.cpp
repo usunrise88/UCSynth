@@ -12,9 +12,9 @@ static const float SR = 48000.0f;
 static VoiceParams defparams()
 {
     VoiceParams p{};
-    p.osc[0] = { 1, 0.0f, 1.0f };            // saw
-    p.osc[1] = { 0, 0.0f, 0.0f };
-    p.osc[2] = { 0, 0.0f, 0.0f };
+    p.osc[0] = { 1, 0.0f, 1.0f, OSC_WAVETABLE };            // saw
+    p.osc[1] = { 0, 0.0f, 0.0f, OSC_WAVETABLE };
+    p.osc[2] = { 0, 0.0f, 0.0f, OSC_WAVETABLE };
     p.noise_level = 0.0f; p.ring_level = 0.0f;
     p.cutoff_hz = 20000.0f; p.resonance = 0.0f; p.filt_mode = FILT_LP; p.flt_env_amt = 0.0f;
     p.amp_env = { 0.005f, 0.1f, 1.0f, 0.02f, false };
@@ -56,7 +56,7 @@ int main()
     {
         Voice v; voice_init(&v, 7);
         VoiceParams p = defparams();
-        p.osc[0] = { 1, 0.0f, 1.0f }; p.osc[1] = { 2, 0.1f, 1.0f }; p.osc[2] = { 3, -0.1f, 1.0f };
+        p.osc[0] = { 1, 0.0f, 1.0f, OSC_WAVETABLE }; p.osc[1] = { 2, 0.1f, 1.0f, OSC_WAVETABLE }; p.osc[2] = { 3, -0.1f, 1.0f, OSC_WAVETABLE };
         p.noise_level = 1.0f; p.ring_level = 1.0f;
         voice_note_on(&v, 60, 127, false, false);
         float mx = 0.0f; bool fin = true;

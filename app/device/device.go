@@ -52,6 +52,18 @@ type Snapshot struct {
 	// Stale is set when nothing has been decoded for staleAfter while the port is still open: the
 	// board stopped answering (watchdog, wedged I2C) but the connection looks perfectly fine.
 	Stale bool
+	// Presets is the device's stored preset directory from the last completed PRESET_LIST. The tree
+	// is derived from each entry's Path ("Folder/Name"). Empty until PresetList() completes.
+	Presets []proto.Preset
+	// Patterns is the device's stored pattern directory (from SeqList). SeqPattern is the current live
+	// 16-step pattern (from SeqGet). Both empty/default until the corresponding request completes.
+	Patterns   []proto.SeqEntry
+	SeqPattern [proto.SeqSteps]proto.SeqStep
+	// SeqRev bumps on every RSP_SEQ_STEP the device sends. The firmware never pushes step edits, so
+	// SeqPattern (and thus SeqRev) only moves when the client asks (SeqGet, or SeqLoad→SeqGet). The
+	// editor watches this to reseed its working copy exactly when a fresh dump lands, and never while
+	// the user is editing — otherwise a stale snapshot would fight local edits.
+	SeqRev uint32
 }
 
 // Param returns the param with the given id and whether it was found.
@@ -101,6 +113,14 @@ type Device struct {
 	missing   int       // shortfall accepted after listTries attempts
 	lastErr   uint8     // most recent RSP_ERR code
 	lastRx    time.Time // when the last frame decoded — liveness
+
+	presets     []proto.Preset // last completed PRESET_LIST result
+	presetBuild []proto.Preset // accumulating current PRESET_LIST (committed on PRESET_END)
+
+	patterns     []proto.SeqEntry              // last completed SEQ_LIST result
+	patternBuild []proto.SeqEntry              // accumulating current SEQ_LIST
+	seqPattern   [proto.SeqSteps]proto.SeqStep // current live pattern (from SEQ_GET / RSP_SEQ_STEP)
+	seqRev       uint32                        // bumps on each RSP_SEQ_STEP — reseed signal for the editor
 
 	noteCh  chan []byte
 	frameCh chan []byte
@@ -189,6 +209,87 @@ func (d *Device) SetParam(id uint16, val float32) {
 // Refresh re-reads one param's value (GET) — for external-change reflection (no push in v1).
 func (d *Device) Refresh(id uint16) { d.enqueue(d.frameCh, proto.GetFrame(id)) }
 
+// --- presets (stage 6) ---
+
+// requestPresetList clears the accumulator and asks for the device's preset directory. The result
+// lands in Snapshot.Presets once PRESET_END arrives.
+func (d *Device) requestPresetList() {
+	d.mu.Lock()
+	d.presetBuild = nil
+	d.mu.Unlock()
+	d.enqueue(d.frameCh, proto.PresetListFrame())
+}
+
+// PresetList requests the device's stored preset directory.
+func (d *Device) PresetList() { d.requestPresetList() }
+
+// PresetSave snapshots the device's current registry into slot (proto.PresetSlotNew = new) at path,
+// then refreshes the directory so the tree shows the result.
+func (d *Device) PresetSave(slot uint16, path string) {
+	d.enqueue(d.frameCh, proto.PresetSaveFrame(slot, path))
+	d.requestPresetList()
+}
+
+// PresetLoad applies a stored preset to the device, then re-LISTs params so cached cur values refresh.
+func (d *Device) PresetLoad(slot uint16) {
+	d.enqueue(d.frameCh, proto.PresetLoadFrame(slot))
+	d.enqueue(d.frameCh, proto.ListFrame())
+}
+
+// PresetDelete removes a slot, then refreshes the directory.
+func (d *Device) PresetDelete(slot uint16) {
+	d.enqueue(d.frameCh, proto.PresetDeleteFrame(slot))
+	d.requestPresetList()
+}
+
+// PresetRename changes a slot's tree path (values untouched), then refreshes the directory.
+func (d *Device) PresetRename(slot uint16, path string) {
+	d.enqueue(d.frameCh, proto.PresetRenameFrame(slot, path))
+	d.requestPresetList()
+}
+
+// --- sequencer patterns (stage 7) ---
+
+// SeqSetStep uploads one edited step to the device's live pattern.
+func (d *Device) SeqSetStep(step uint8, st proto.SeqStep) {
+	d.enqueue(d.frameCh, proto.SeqSetStepFrame(step, st))
+}
+
+// SeqGet requests the device's live pattern (16 RSP_SEQ_STEP → Snapshot.SeqPattern).
+func (d *Device) SeqGet() { d.enqueue(d.frameCh, proto.SeqGetFrame()) }
+
+func (d *Device) requestSeqList() {
+	d.mu.Lock()
+	d.patternBuild = nil
+	d.mu.Unlock()
+	d.enqueue(d.frameCh, proto.SeqListFrame())
+}
+
+// SeqList requests the device's stored pattern directory.
+func (d *Device) SeqList() { d.requestSeqList() }
+
+// SeqSave persists the live pattern to a NVS slot (proto.PresetSlotNew = new), then refreshes the list.
+func (d *Device) SeqSave(slot uint16, path string) {
+	d.enqueue(d.frameCh, proto.SeqSaveFrame(slot, path))
+	d.requestSeqList()
+}
+
+// SeqLoad applies a stored pattern to the live one, then re-GETs it so Snapshot.SeqPattern refreshes.
+func (d *Device) SeqLoad(slot uint16) {
+	d.enqueue(d.frameCh, proto.SeqLoadFrame(slot))
+	d.enqueue(d.frameCh, proto.SeqGetFrame())
+}
+
+func (d *Device) SeqDelete(slot uint16) {
+	d.enqueue(d.frameCh, proto.SeqDeleteFrame(slot))
+	d.requestSeqList()
+}
+
+func (d *Device) SeqRename(slot uint16, path string) {
+	d.enqueue(d.frameCh, proto.SeqRenameFrame(slot, path))
+	d.requestSeqList()
+}
+
 func (d *Device) NoteOn(note, vel uint8) {
 	d.mu.Lock()
 	d.held[note] = true
@@ -235,14 +336,22 @@ func (d *Device) Snapshot() Snapshot {
 	for _, id := range d.order {
 		ps = append(ps, d.params[id])
 	}
+	prs := make([]proto.Preset, len(d.presets))
+	copy(prs, d.presets)
+	pats := make([]proto.SeqEntry, len(d.patterns))
+	copy(pats, d.patterns)
 	return Snapshot{
-		State:   d.state,
-		Err:     d.err,
-		Params:  ps,
-		Stat:    d.stat,
-		Missing: d.missing,
-		LastErr: d.lastErr,
-		Stale:   d.state == Synced && time.Since(d.lastRx) > staleAfter,
+		State:      d.state,
+		Err:        d.err,
+		Params:     ps,
+		Stat:       d.stat,
+		Missing:    d.missing,
+		LastErr:    d.lastErr,
+		Stale:      d.state == Synced && time.Since(d.lastRx) > staleAfter,
+		Presets:    prs,
+		Patterns:   pats,
+		SeqPattern: d.seqPattern,
+		SeqRev:     d.seqRev,
 	}
 }
 
@@ -358,6 +467,52 @@ func (d *Device) handle(body []byte) bool {
 		d.lastErr = e.Code
 		d.mu.Unlock()
 		return true
+	case proto.RspPreset:
+		p, err := proto.ParsePreset(body)
+		if err != nil {
+			return false
+		}
+		d.mu.Lock()
+		d.presetBuild = append(d.presetBuild, p)
+		d.mu.Unlock()
+		return false // accumulate quietly; the UI refreshes on PRESET_END
+	case proto.RspPresetEnd:
+		d.mu.Lock()
+		d.presets = append([]proto.Preset(nil), d.presetBuild...)
+		d.presetBuild = nil
+		d.mu.Unlock()
+		return true
+	case proto.RspPresetSaved:
+		// The assigned slot is not needed by the UI: after a save we re-LIST, and the new preset
+		// appears in the tree by its path. Just let the change propagate.
+		return true
+	case proto.RspSeqStep:
+		step, st, err := proto.ParseSeqStep(body)
+		if err != nil || int(step) >= proto.SeqSteps {
+			return false
+		}
+		d.mu.Lock()
+		d.seqPattern[step] = st
+		d.seqRev++
+		d.mu.Unlock()
+		return true
+	case proto.RspSeqEntry:
+		e, err := proto.ParseSeqEntry(body)
+		if err != nil {
+			return false
+		}
+		d.mu.Lock()
+		d.patternBuild = append(d.patternBuild, e)
+		d.mu.Unlock()
+		return false // accumulate quietly; the UI refreshes on SEQ_END
+	case proto.RspSeqEnd:
+		d.mu.Lock()
+		d.patterns = append([]proto.SeqEntry(nil), d.patternBuild...)
+		d.patternBuild = nil
+		d.mu.Unlock()
+		return true
+	case proto.RspSeqSaved:
+		return true // after save we re-LIST; the pattern appears by path
 	default:
 		return false // ACK — nothing to record
 	}

@@ -12,6 +12,7 @@ import (
 	"gioui.org/widget/material"
 
 	"ucsynth/app/patch"
+	"ucsynth/app/proto"
 )
 
 func (c *Controller) refreshPatches() {
@@ -123,6 +124,82 @@ func (c *Controller) handlePatches(gtx C) {
 			c.patchMsg = "экспортирован → " + path
 		}
 	}
+
+	c.handleDevPresets(gtx)
+}
+
+// handleDevPresets drives the "пресеты синта" (on-device NVS) section. The name box (patchName) doubles
+// as the tree path for both file patches and device presets.
+func (c *Controller) handleDevPresets(gtx C) {
+	// Keep the local mirror and the button slice in sync with the device once per frame, and fetch the
+	// directory once whenever we (re)connect to a device.
+	if c.dev != nil {
+		c.devPresets = c.dev.Snapshot().Presets
+		if c.dev != c.devPresetListedFor {
+			c.dev.PresetList()
+			c.devPresetListedFor = c.dev
+		}
+	} else {
+		c.devPresets = nil
+		c.devPresetListedFor = nil
+		c.devPresetSelOK = false
+	}
+	if len(c.devPresetBtns) != len(c.devPresets) {
+		c.devPresetBtns = make([]widget.Clickable, len(c.devPresets))
+	}
+
+	if c.devListBtn.Clicked(gtx) && c.dev != nil {
+		c.dev.PresetList()
+	}
+	if c.devSaveBtn.Clicked(gtx) {
+		name := strings.TrimSpace(c.patchName.Text())
+		switch {
+		case name == "":
+			c.patchMsg = "введи имя пресета (можно Папка/Имя)"
+		case c.dev == nil:
+			c.patchMsg = "нет подключения к синту"
+		default:
+			c.dev.PresetSave(proto.PresetSlotNew, name)
+			c.patchMsg = "сохранён в синт: " + name
+		}
+	}
+	if c.devLoadBtn.Clicked(gtx) {
+		if c.dev == nil || !c.devPresetSelOK {
+			c.patchMsg = "выбери пресет синта в списке"
+		} else {
+			c.dev.PresetLoad(c.devPresetSel)
+			c.patchMsg = "загружен из синта"
+		}
+	}
+	if c.devRenameBtn.Clicked(gtx) {
+		name := strings.TrimSpace(c.patchName.Text())
+		switch {
+		case c.dev == nil || !c.devPresetSelOK:
+			c.patchMsg = "выбери пресет синта и задай новый путь"
+		case name == "":
+			c.patchMsg = "задай новый путь (Папка/Имя)"
+		default:
+			c.dev.PresetRename(c.devPresetSel, name)
+			c.patchMsg = "переименован в синте: " + name
+		}
+	}
+	if c.devDeleteBtn.Clicked(gtx) {
+		if c.dev == nil || !c.devPresetSelOK {
+			c.patchMsg = "выбери пресет синта в списке"
+		} else {
+			c.dev.PresetDelete(c.devPresetSel)
+			c.devPresetSelOK = false
+			c.patchMsg = "удалён из синта"
+		}
+	}
+	for i := range c.devPresetBtns {
+		if i < len(c.devPresets) && c.devPresetBtns[i].Clicked(gtx) {
+			c.devPresetSel = c.devPresets[i].Slot
+			c.devPresetSelOK = true
+			c.patchName.SetText(c.devPresets[i].Path)
+			c.patchMsg = "выбран пресет синта: " + c.devPresets[i].Path
+		}
+	}
 }
 
 func (c *Controller) layoutPatches(gtx C) D {
@@ -159,15 +236,50 @@ func (c *Controller) layoutPatches(gtx C) D {
 				)
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+			// Device presets (stage 6): reuse the Name box above as the tree path.
+			layout.Rigid(func(gtx C) D {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(label(c.th, unit.Sp(12), "Синт", colMuted).Layout),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+					layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.devSaveBtn, "Сохранить в синт", true, false, false) }),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.devLoadBtn, "Загрузить", false, false, false) }),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.devRenameBtn, "Переименовать", false, false, false) }),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.devDeleteBtn, "Удалить", false, true, false) }),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+					layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.devListBtn, "Обновить", false, false, false) }),
+				)
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 			layout.Rigid(func(gtx C) D {
 				msg := c.patchMsg
 				if msg == "" {
-					msg = "Патчи — JSON-файлы в " + c.store.Root + " (папки = дерево)"
+					msg = "Файлы — JSON в " + c.store.Root + "; пресеты синта — в его памяти (папки = дерево)"
 				}
 				return label(c.th, unit.Sp(11.5), msg, colFaint).Layout(gtx)
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
-			layout.Flexed(1, c.layoutPatchTree),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+					layout.Flexed(1, func(gtx C) D {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(label(c.th, unit.Sp(12), "Файлы (ПК)", colMuted).Layout),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+							layout.Flexed(1, c.layoutPatchTree),
+						)
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+					layout.Flexed(1, func(gtx C) D {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(label(c.th, unit.Sp(12), "Пресеты синта", colMuted).Layout),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+							layout.Flexed(1, c.layoutDevPresetTree),
+						)
+					}),
+				)
+			}),
 		)
 	})
 }
@@ -188,6 +300,38 @@ func (c *Controller) layoutPatchTree(gtx C) D {
 		}
 		return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
 			return c.patchBtns[i].Layout(gtx, func(gtx C) D { return st.draw(gtx, c.th, disp) })
+		})
+	})
+}
+
+// layoutDevPresetTree renders the on-device (NVS) presets, tree grouped by each entry's path.
+func (c *Controller) layoutDevPresetTree(gtx C) D {
+	if c.dev == nil {
+		return label(c.th, unit.Sp(13), "Нет подключения к синту.", colFaint).Layout(gtx)
+	}
+	if len(c.devPresets) == 0 {
+		return label(c.th, unit.Sp(13), "В синте пресетов нет — «Сохранить в синт».", colFaint).Layout(gtx)
+	}
+	return material.List(c.th, &c.devPresetScroll).Layout(gtx, len(c.devPresets), func(gtx C, i int) D {
+		if i >= len(c.devPresetBtns) {
+			return D{}
+		}
+		p := c.devPresets[i]
+		disp := p.Path
+		switch {
+		case disp == "":
+			disp = fmt.Sprintf("(слот %d)", p.Slot)
+		default:
+			if idx := strings.LastIndex(disp, "/"); idx >= 0 {
+				disp = disp[:idx] + " / " + disp[idx+1:]
+			}
+		}
+		st := pill{border: colLine2, text: colTxt, size: unit.Sp(13), padX: 10, padY: 6, radius: 6}
+		if c.devPresetSelOK && p.Slot == c.devPresetSel {
+			st.border, st.text, st.fill = colAccent, colAccentB, colAccentDim
+		}
+		return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx C) D {
+			return c.devPresetBtns[i].Layout(gtx, func(gtx C) D { return st.draw(gtx, c.th, disp) })
 		})
 	})
 }

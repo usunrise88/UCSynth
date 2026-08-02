@@ -126,6 +126,30 @@ constexpr ParamDef kParams[] = {
     { PARAM_REVERB_DAMP,    "reverb_damp",    PARAM_TYPE_FLOAT,   0.0f,     1.0f,     0.5f },
     { PARAM_REVERB_WIDTH,   "reverb_width",   PARAM_TYPE_FLOAT,   0.0f,     1.0f,     1.0f },
     { PARAM_REVERB_MIX,     "reverb_mix",     PARAM_TYPE_FLOAT,   0.0f,     1.0f,    0.25f },
+    // этап 6 — модуляция длины гребёнок реверба (дефолт depth=0 → сегодняшний звук)
+    { PARAM_REVERB_MODDEPTH,"reverb_moddepth",PARAM_TYPE_FLOAT,   0.0f,     1.0f,     0.0f },
+    { PARAM_REVERB_MODRATE, "reverb_modrate", PARAM_TYPE_FLOAT,   0.05f,    5.0f,     0.7f },
+    // этап 7 — секвенсор / арпеджиатор (общий темп-клок)
+    { PARAM_SEQ_BPM,     "seq_bpm",     PARAM_TYPE_INT,    20.0f,  300.0f,  120.0f },
+    { PARAM_SEQ_SWING,   "seq_swing",   PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.0f },
+    { PARAM_SEQ_PLAYING, "seq_playing", PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    { PARAM_SEQ_ON,      "seq_on",      PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    { PARAM_ARP_ON,      "arp_on",      PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    { PARAM_ARP_MODE,    "arp_mode",    PARAM_TYPE_ENUM,    0.0f,    3.0f,    0.0f },
+    { PARAM_ARP_OCTAVES, "arp_octaves", PARAM_TYPE_INT,     1.0f,    4.0f,    1.0f },
+    { PARAM_ARP_RATE,    "arp_rate",    PARAM_TYPE_ENUM,    0.0f,    3.0f,    2.0f },
+    { PARAM_ARP_HOLD,    "arp_hold",    PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    // этап 12 — типы осцилляторов
+    { PARAM_OSC1_TYPE,   "osc1_type",   PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
+    { PARAM_OSC2_TYPE,   "osc2_type",   PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
+    { PARAM_OSC3_TYPE,   "osc3_type",   PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
+    { PARAM_PD_AMOUNT,   "pd_amount",   PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.0f },
+    { PARAM_VOICE_ENGINE,"voice_engine",PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
+    { PARAM_FM_RATIO,    "fm_ratio",    PARAM_TYPE_FLOAT,   0.5f,    8.0f,    1.0f },
+    { PARAM_FM_INDEX,    "fm_index",    PARAM_TYPE_FLOAT,   0.0f,   10.0f,    0.0f },
+    { PARAM_KS_DAMP,     "ks_damp",     PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.5f },
+    { PARAM_KS_DECAY,    "ks_decay",    PARAM_TYPE_FLOAT,   0.8f,    0.999f,  0.99f },
+    { PARAM_KS_PLUCK,    "ks_pluck",    PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.5f },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");
