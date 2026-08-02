@@ -36,6 +36,8 @@ var Blocks = []Block{
 	{"seq", "Секвенсор"},
 	{"arp", "Арпеджиатор"},
 	{"engine", "Движок"},
+	{"fm", "FM (2-оп)"},
+	{"ks", "Karplus"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
 }
@@ -163,14 +165,16 @@ var byName = map[string]Field{
 	"arp_octaves": {"arp", "Октавы", "", nil},
 	"arp_rate":    {"arp", "Скорость", "", arpRateLabels},
 	"arp_hold":    {"arp", "Hold", "", nil},
-	// этап 12 — движок голоса + его параметры (тип осц-слота — в блоках osc1/2/3 выше)
+	// этап 12 — движок голоса. Селектор — в блоке engine (рэк ставит его над осцилляторами). Параметры
+	// FM/Karplus — в своих блоках (панели активны только для своего движка). pd_amount формально в engine,
+	// но рэк вынимает его и показывает ВНУТРИ осц-панели, если у слота тип Phase Dist (см. rack/oscPanel).
 	"voice_engine": {"engine", "Движок", "", engineLabels},
 	"pd_amount":    {"engine", "PD глубина", "", nil},
-	"fm_ratio":     {"engine", "FM ratio", "", nil},
-	"fm_index":     {"engine", "FM index", "", nil},
-	"ks_damp":      {"engine", "KS damp", "", nil},
-	"ks_decay":     {"engine", "KS decay", "", nil},
-	"ks_pluck":     {"engine", "KS pluck", "", nil},
+	"fm_ratio":     {"fm", "Ratio", "", nil},
+	"fm_index":     {"fm", "Index", "", nil},
+	"ks_damp":      {"ks", "Damp", "", nil},
+	"ks_decay":     {"ks", "Decay", "", nil},
+	"ks_pluck":     {"ks", "Pluck", "", nil},
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
 	"test_tone_hz": {"debug", "Частота тона", "Гц", nil},

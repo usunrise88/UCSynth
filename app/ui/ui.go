@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"sort"
+	"strings"
 	"sync"
 
 	"gioui.org/font/gofont"
@@ -220,9 +221,9 @@ func (n *noteSink) midiAllOff() {
 // controls but isn't listed here is appended to the last column by rack() (real catch-all below) —
 // so a newly-added block can never be silently dropped from the UI.
 var rackCols = [][]string{
-	{"osc1", "osc2", "osc3", "mixer"},
+	{"engine", "osc1", "osc2", "osc3", "mixer", "fm", "ks"},
 	{"filter", "ampenv", "fltenv", "waveenv", "overdrive", "delay", "reverb"},
-	{"global", "engine", "lfo1", "lfo2", "modmatrix", "lofi", "seq", "arp", "debug", "misc"},
+	{"global", "lfo1", "lfo2", "modmatrix", "lofi", "seq", "arp", "debug", "misc"},
 }
 var colWeights = []float32{1, 1.15, 1}
 
@@ -623,9 +624,26 @@ func (c *Controller) layoutRack(gtx C) D {
 
 func (c *Controller) rack(gtx C) D {
 	byBlock := map[string][]*control{}
+	var engineCtl, pdCtl *control
 	for _, ct := range c.controls {
 		byBlock[ct.fld.Block] = append(byBlock[ct.fld.Block], ct)
+		switch ct.p.Name {
+		case "voice_engine":
+			engineCtl = ct
+		case "pd_amount":
+			pdCtl = ct
+		}
 	}
+	// pd_amount не показываем общим контролом: он выносится ВНУТРЬ осц-панели PD-слота (oscPanel).
+	if pdCtl != nil {
+		byBlock["engine"] = removeControl(byBlock["engine"], pdCtl)
+	}
+	// Текущий движок голоса → какие блоки активны (Classic: осц/микшер; FM/Karplus — свои панели).
+	engine := 0
+	if engineCtl != nil {
+		engine = int(engineCtl.value() + 0.5)
+	}
+
 	// Catch-all: any block with controls not placed in rackCols goes to the last column, so adding a
 	// block to layout without touching rackCols can't silently drop its panel (unlistedBlocks is tested).
 	extra := unlistedBlocks(byBlock)
@@ -643,10 +661,38 @@ func (c *Controller) rack(gtx C) D {
 			if ci < len(rackCols)-1 {
 				ins.Right = unit.Dp(6)
 			}
-			return ins.Layout(gtx, func(gtx C) D { return c.column(gtx, keys, byBlock) })
+			return ins.Layout(gtx, func(gtx C) D { return c.column(gtx, keys, byBlock, engine, pdCtl) })
 		}))
 	}
 	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Start}.Layout(gtx, cols...)
+}
+
+// removeControl returns cs without ct (used to lift pd_amount out of the generic rack — it renders
+// contextually inside the PD-typed oscillator panel instead).
+func removeControl(cs []*control, ct *control) []*control {
+	out := cs[:0:0]
+	for _, x := range cs {
+		if x != ct {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// blockEnabled reports whether a block's controls are relevant for the current voice engine. The
+// oscillators + mixer belong to Classic; FM and Karplus each own one block; everything else (filter,
+// envelopes, LFO, FX, …) is post-source and applies to every engine.
+func blockEnabled(block string, engine int) bool {
+	switch block {
+	case "osc1", "osc2", "osc3", "mixer":
+		return engine == 0 // ENG_CLASSIC
+	case "fm":
+		return engine == 1 // ENG_FM
+	case "ks":
+		return engine == 2 // ENG_KS
+	default:
+		return true
+	}
 }
 
 // unlistedBlocks returns block keys present in byBlock but absent from rackCols, sorted for a stable
@@ -668,7 +714,7 @@ func unlistedBlocks(byBlock map[string][]*control) []string {
 	return extra
 }
 
-func (c *Controller) column(gtx C, keys []string, byBlock map[string][]*control) D {
+func (c *Controller) column(gtx C, keys []string, byBlock map[string][]*control, engine int, pdCtl *control) D {
 	var items []layout.FlexChild
 	first := true
 	for _, k := range keys {
@@ -681,18 +727,58 @@ func (c *Controller) column(gtx C, keys []string, byBlock map[string][]*control)
 			items = append(items, layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout))
 		}
 		first = false
+		enabled := blockEnabled(k, engine)
+		// Greyed panels use a no-op setter so a stray drag can't send a value, and get a dim scrim on top.
+		set := c.setParam
+		if !enabled {
+			set = func(uint16, float32) {}
+		}
 		items = append(items, layout.Rigid(func(gtx C) D {
-			body := func(gtx C) D { return c.panelBody(gtx, cs) }
-			if k == "modmatrix" { // compact per-slot view instead of generic pill-rows
+			var body layout.Widget
+			switch {
+			case k == "modmatrix": // compact per-slot view instead of generic pill-rows
 				body = func(gtx C) D { return c.matrixPanel(gtx, cs) }
+			case k == "osc1" || k == "osc2" || k == "osc3":
+				body = func(gtx C) D { return c.oscPanel(gtx, cs, pdCtl, set) }
+			default:
+				body = func(gtx C) D { return c.panelBody(gtx, cs, set) }
 			}
-			return vstPanel(gtx, c.th, blk.BlockTitle(k), body)
+			d := vstPanel(gtx, c.th, blk.BlockTitle(k), body)
+			if !enabled {
+				disabledScrim(gtx, d.Size)
+			}
+			return d
 		}))
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
 }
 
-func (c *Controller) panelBody(gtx C, cs []*control) D {
+// oscPanel renders one oscillator slot. When the slot's type is Phase Distortion, the global pd_amount
+// knob is shown inside this panel (it lives here contextually, not as a standalone control).
+func (c *Controller) oscPanel(gtx C, cs []*control, pdCtl *control, set setFunc) D {
+	show := cs
+	if pdCtl != nil && slotIsPD(cs) {
+		show = append(append([]*control{}, cs...), pdCtl)
+	}
+	return c.panelBody(gtx, show, set)
+}
+
+// slotIsPD reports whether this oscillator slot's «Тип» control is set to Phase Distortion (OSC_PD=2).
+func slotIsPD(cs []*control) bool {
+	for _, ct := range cs {
+		if strings.HasSuffix(ct.p.Name, "_type") {
+			return int(ct.value()+0.5) == 2
+		}
+	}
+	return false
+}
+
+// disabledScrim paints a translucent dark overlay over a just-drawn panel [0,size], marking it inactive.
+func disabledScrim(gtx C, size image.Point) {
+	paint.FillShape(gtx.Ops, rgba(0x0D1117, 0xB4), clip.Rect{Max: size}.Op())
+}
+
+func (c *Controller) panelBody(gtx C, cs []*control, set setFunc) D {
 	var segs, knobs, sliders, steppers, toggles []*control
 	for _, ct := range cs {
 		switch ct.kind {
@@ -719,25 +805,25 @@ func (c *Controller) panelBody(gtx C, cs []*control) D {
 	}
 	for _, ct := range segs {
 		ct := ct
-		sec(func(gtx C) D { return ct.segField(gtx, c.th, c.setParam) })
+		sec(func(gtx C) D { return ct.segField(gtx, c.th, set) })
 	}
 	if len(knobs) > 0 {
-		sec(func(gtx C) D { return c.cellRow(gtx, knobs, false) })
+		sec(func(gtx C) D { return c.cellRow(gtx, knobs, false, set) })
 	}
 	if len(sliders) > 0 {
-		sec(func(gtx C) D { return c.cellRow(gtx, sliders, true) })
+		sec(func(gtx C) D { return c.cellRow(gtx, sliders, true, set) })
 	}
 	for _, ct := range steppers {
 		ct := ct
-		sec(func(gtx C) D { return ct.stepperCell(gtx, c.th, c.setParam) })
+		sec(func(gtx C) D { return ct.stepperCell(gtx, c.th, set) })
 	}
 	if len(toggles) > 0 {
-		sec(func(gtx C) D { return c.toggleRow(gtx, toggles) })
+		sec(func(gtx C) D { return c.toggleRow(gtx, toggles, set) })
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
 }
 
-func (c *Controller) cellRow(gtx C, cs []*control, slider bool) D {
+func (c *Controller) cellRow(gtx C, cs []*control, slider bool, set setFunc) D {
 	children := make([]layout.FlexChild, 0, len(cs)*2)
 	for i, ct := range cs {
 		ct := ct
@@ -746,22 +832,22 @@ func (c *Controller) cellRow(gtx C, cs []*control, slider bool) D {
 		}
 		children = append(children, layout.Rigid(func(gtx C) D {
 			if slider {
-				return ct.sliderCell(gtx, c.th, c.setParam)
+				return ct.sliderCell(gtx, c.th, set)
 			}
-			return ct.knobCell(gtx, c.th, c.setParam)
+			return ct.knobCell(gtx, c.th, set)
 		}))
 	}
 	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Start}.Layout(gtx, children...)
 }
 
-func (c *Controller) toggleRow(gtx C, cs []*control) D {
+func (c *Controller) toggleRow(gtx C, cs []*control, set setFunc) D {
 	children := make([]layout.FlexChild, 0, len(cs)*2)
 	for i, ct := range cs {
 		ct := ct
 		if i > 0 {
 			children = append(children, layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout))
 		}
-		children = append(children, layout.Rigid(func(gtx C) D { return ct.toggleCell(gtx, c.th, c.setParam) }))
+		children = append(children, layout.Rigid(func(gtx C) D { return ct.toggleCell(gtx, c.th, set) }))
 	}
 	return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx, children...)
 }

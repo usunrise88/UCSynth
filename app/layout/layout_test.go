@@ -93,17 +93,26 @@ func TestStage12OscTypesAndEngine(t *testing.T) {
 			t.Fatalf("%s → %+v, want %s with 3 type labels", name, f, blk)
 		}
 	}
-	// движок голоса — блок engine, 3 подписи (Classic/FM/Karplus)
+	// движок голоса — блок engine (рэк ставит его над осцилляторами), 3 подписи (Classic/FM/Karplus)
 	if f := For("voice_engine"); f.Block != "engine" || len(f.EnumLabels) != 3 {
 		t.Fatalf("voice_engine → %+v, want engine with 3 labels", f)
 	}
 	if For("voice_engine").EnumLabel(2) != "Karplus" {
 		t.Fatalf("engine enum 2 = %q, want Karplus", For("voice_engine").EnumLabel(2))
 	}
-	// FM/KS/PD-скаляры — блок engine, обычные кнобы
-	for _, name := range []string{"pd_amount", "fm_ratio", "fm_index", "ks_damp", "ks_decay", "ks_pluck"} {
-		if f := For(name); f.Block != "engine" || f.EnumLabels != nil {
-			t.Fatalf("%s → %+v, want engine plain knob", name, f)
+	// pd_amount формально в engine (рэк выносит его в осц-панель PD-слота)
+	if f := For("pd_amount"); f.Block != "engine" || f.EnumLabels != nil {
+		t.Fatalf("pd_amount → %+v, want engine plain knob", f)
+	}
+	// FM/Karplus — свои блоки (панели активны только для своего движка)
+	for _, name := range []string{"fm_ratio", "fm_index"} {
+		if f := For(name); f.Block != "fm" || f.EnumLabels != nil {
+			t.Fatalf("%s → %+v, want fm plain knob", name, f)
+		}
+	}
+	for _, name := range []string{"ks_damp", "ks_decay", "ks_pluck"} {
+		if f := For(name); f.Block != "ks" || f.EnumLabels != nil {
+			t.Fatalf("%s → %+v, want ks plain knob", name, f)
 		}
 	}
 }
