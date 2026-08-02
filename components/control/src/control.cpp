@@ -147,6 +147,9 @@ constexpr ParamDef kParams[] = {
     { PARAM_VOICE_ENGINE,"voice_engine",PARAM_TYPE_ENUM,    0.0f,    2.0f,    0.0f },
     { PARAM_FM_RATIO,    "fm_ratio",    PARAM_TYPE_FLOAT,   0.5f,    8.0f,    1.0f },
     { PARAM_FM_INDEX,    "fm_index",    PARAM_TYPE_FLOAT,   0.0f,   10.0f,    0.0f },
+    { PARAM_KS_DAMP,     "ks_damp",     PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.5f },
+    { PARAM_KS_DECAY,    "ks_decay",    PARAM_TYPE_FLOAT,   0.8f,    0.999f,  0.99f },
+    { PARAM_KS_PLUCK,    "ks_pluck",    PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.5f },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");

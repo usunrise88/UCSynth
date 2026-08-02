@@ -148,6 +148,9 @@ typedef enum {
     PARAM_VOICE_ENGINE = 101, // движок голоса: 0 Classic / 1 FM / 2 Karplus (enum)
     PARAM_FM_RATIO     = 102, // FM: отношение частот модулятор/несущая 0.5..8 (float)
     PARAM_FM_INDEX     = 103, // FM: индекс модуляции 0..10 (float)
+    PARAM_KS_DAMP      = 104, // Karplus: затухание петли (яркость) 0..1 (float)
+    PARAM_KS_DECAY     = 105, // Karplus: спад струны 0.8..0.999 (float)
+    PARAM_KS_PLUCK     = 106, // Karplus: характер щипка (тембр берста) 0..1 (float)
     PARAM_COUNT
 } param_id_t;
 

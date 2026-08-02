@@ -35,6 +35,7 @@ static VoiceParams engparams()
     p.amp_env = { 0.002f, 0.05f, 1.0f, 0.02f, false };   // attack→sustain=1: ровная амплитуда
     p.flt_env = { 0.002f, 0.05f, 1.0f, 0.02f, false };
     p.fm_ratio = 1.0f; p.fm_index = 0.0f;
+    p.ks_damp = 0.3f; p.ks_decay = 0.995f; p.ks_pluck = 0.8f;
     return p;
 }
 
@@ -101,6 +102,59 @@ int main()
         capture(&v, &p, buf, N);
         const double m3_r2 = mag_at(buf, N, 3 * cyc1);
         check(std::fabs(m3_r2 - m3_r1) > 0.05, "FM: fm_ratio меняет спектр");
+    }
+
+    // ---------------- Karplus-Strong (12.4) ----------------
+    const int knote = 57;                            // 220 Гц
+    const double kfc = note_hz(knote);
+    const int klag = (int)(SR / kfc + 0.5f);         // длина линии = период фундамента
+
+    // щипок звучит и затухает (ks_decay), без NaN
+    {
+        Voice v; voice_init(&v, 10);
+        VoiceParams p = engparams();
+        p.engine = ENG_KS; p.ks_decay = 0.995f; p.ks_damp = 0.3f; p.ks_pluck = 0.8f;
+        p.amp_env = { 0.001f, 0.05f, 1.0f, 0.02f, false };   // gate держим — спад от KS, не от release
+        voice_note_on(&v, (uint8_t)knote, 100, false, false);
+        float blk[128];
+        double rms_early = 0, rms_late = 0;
+        bool fin = true;
+        for (int b = 0; b < 200; ++b) {
+            voice_render(&v, &p, SR, blk, 128);
+            double e = 0;
+            for (int i = 0; i < 128; ++i) { if (!std::isfinite(blk[i])) fin = false; e += blk[i] * blk[i]; }
+            e = std::sqrt(e / 128.0);
+            if (b == 3) rms_early = e;
+            if (b == 150) rms_late = e;
+        }
+        check(fin, "KS: без NaN");
+        check(rms_early > 0.02, "KS: щипок звучит");
+        check(rms_late < 0.6 * rms_early, "KS: хвост затухает (ks_decay)");
+    }
+
+    // питч = sr/длина: автокорреляция пик на lag = период фундамента
+    {
+        Voice v; voice_init(&v, 11);
+        VoiceParams p = engparams();
+        p.engine = ENG_KS; p.ks_decay = 0.999f; p.ks_damp = 0.2f; p.ks_pluck = 0.9f;
+        p.amp_env = { 0.001f, 0.05f, 1.0f, 0.02f, false };
+        voice_note_on(&v, (uint8_t)knote, 100, false, false);
+        float warm[128];
+        for (int b = 0; b < 4; ++b) voice_render(&v, &p, SR, warm, 128);
+        const int M = 4096;
+        static float kb[4096];
+        voice_render(&v, &p, SR, kb, M);
+        auto ac = [&](int lag) {
+            double num = 0, den = 0;
+            for (int nn = 0; nn + lag < M; ++nn) num += kb[nn] * kb[nn + lag];
+            for (int nn = 0; nn < M; ++nn) den += kb[nn] * kb[nn];
+            return den > 0 ? num / den : 0.0;
+        };
+        const double a_true = ac(klag);
+        const double a_half = ac(klag / 2);
+        const double a_off  = ac(klag + klag / 3);
+        check(a_true > 0.3, "KS: сильная периодичность на lag = sr/freq");
+        check(a_true > a_half && a_true > a_off, "KS: питч = sr/длина (пик автокорреляции на нужном lag)");
     }
 
     printf(g_fail ? "FAILED (%d)\n" : "OK: engines — все проверки пройдены\n", g_fail);

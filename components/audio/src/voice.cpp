@@ -48,6 +48,12 @@ void voice_init(Voice *v, uint32_t seed)
     v->rng        = seed ? seed : 0x1234567u;
     v->amp_prev   = 0.0f;
     v->velocity   = 1.0f;                   // до первого note-on — полная (нейтрально для матрицы)
+    v->ks_len     = 0;
+    v->ks_pos     = 0;
+    v->ks_last    = 0.0f;
+    v->ks_excite  = false;
+    // ks_buf намеренно НЕ зануляем (48 КБ на голос): он валиден только после excite, который его
+    // заполняет целиком; до первого KS-note-on его никто не читает.
 }
 
 void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch, bool glide)
@@ -61,6 +67,7 @@ void voice_note_on(Voice *v, uint8_t note, uint8_t vel, bool latch, bool glide)
     env_trigger(&v->env_amp);                // ретригер ОБЕИХ огибающих
     env_trigger(&v->env_flt);
     waveenv_reset(&v->env_wave);             // wave-огибающая стартует заново на note-on
+    v->ks_excite = true;                     // взвести щипок Karplus (потребляет только KS-путь)
 }
 
 void voice_slide(Voice *v, uint8_t note, bool glide)
@@ -188,8 +195,37 @@ void AUDIO_HOT voice_render(Voice *v, const VoiceParams *p, float sr, float *out
             v->phase[0] += inc_c; v->phase[0] -= floorf(v->phase[0]);
             v->phase[1] += inc_m; v->phase[1] -= floorf(v->phase[1]);
         }
+    } else if (p->engine == ENG_KS) {
+        // Karplus-Strong (этап 12.4): шум-берст → линия задержки (длина = sr/freq) + one-pole в петле.
+        // Возбуждение на note-on (ks_excite): заполняем буфер шумом, окрашенным ks_pluck (0=тускло,
+        // 1=ярко). Известный алгоритм (не изобретаем).
+        if (v->ks_excite) {
+            int len = (int)(sr / note_hz + 0.5f);
+            if (len < 2) len = 2; else if (len > KS_MAX) len = KS_MAX;   // питч-пол = sr/KS_MAX
+            const float bright = 0.2f + 0.8f * p->ks_pluck;              // сглаживание берста (тембр щипка)
+            float e = 0.0f;
+            for (int k = 0; k < len; ++k) {
+                const float nz = noise_next(v->rng);
+                e += (nz - e) * bright;                                  // one-pole ФНЧ на возбуждении
+                v->ks_buf[k] = e;
+            }
+            v->ks_len = len; v->ks_pos = 0; v->ks_last = 0.0f;
+            v->ks_excite = false;
+        }
+        if (v->ks_len < 2) v->ks_len = 2;   // страховка (excite не пришёл — не делим на 0/не залипаем)
+        const float damp  = p->ks_damp;
+        const float decay = p->ks_decay;
+        for (int i = 0; i < n; ++i) {
+            const float s   = v->ks_buf[v->ks_pos];
+            const float avg = 0.5f * (s + v->ks_last);                  // ФНЧ петли обратной связи
+            const float filt = s + (avg - s) * damp;                    // damp: 0 ярко … 1 глухо
+            v->ks_buf[v->ks_pos] = filt * decay;                        // спад струны
+            v->ks_last = filt;
+            emit(s, i);
+            if (++v->ks_pos >= v->ks_len) v->ks_pos = 0;
+        }
     } else {
-        // Classic: 3 осц-слота (тип на слот) → микшер (+шум +ring). ENG_KS сюда же до 12.4.
+        // Classic: 3 осц-слота (тип на слот) → микшер (+шум +ring).
         for (int i = 0; i < n; ++i) {
             const float o0 = need0 ? osc_slot_sample(p->osc[0], pos0, morph, v->phase[0], inc[0], mip[0], p->pd_amount) : 0.0f;
             const float o1 = need1 ? osc_slot_sample(p->osc[1], pos1, morph, v->phase[1], inc[1], mip[1], p->pd_amount) : 0.0f;

@@ -99,6 +99,9 @@ static void build_synth_params(SynthParams *sp)
     vp->pd_amount   = pr(PARAM_PD_AMOUNT);
     vp->fm_ratio    = pr(PARAM_FM_RATIO);
     vp->fm_index    = pr(PARAM_FM_INDEX);
+    vp->ks_damp     = pr(PARAM_KS_DAMP);
+    vp->ks_decay    = pr(PARAM_KS_DECAY);
+    vp->ks_pluck    = pr(PARAM_KS_PLUCK);
     vp->noise_level = pr(PARAM_NOISE_LEVEL);
     vp->ring_level  = pr(PARAM_RING_LEVEL);
     vp->cutoff_hz   = pr(PARAM_CUTOFF);

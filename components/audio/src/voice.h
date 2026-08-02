@@ -72,6 +72,11 @@ enum ModDest : uint8_t {
 
 static constexpr int MOD_SLOTS = 8;   // гибкая матрица: 8 роутов src→dst с глубиной
 
+// Karplus-Strong (этап 12.4): длина линии задержки = sr/freq. Макс под низшую ноту KS ≈ sr/KS_MAX
+// (48к/1536 ≈ 31 Гц ≈ MIDI 23). Буфер пер-голосный во внутренней RAM: 8×1536×4 ≈ 48 КБ (дефицитный
+// пул — замерить free-internal-RAM; при нехватке урезать KS_MAX/диапазон/полифонию, см. tech-debt).
+static constexpr int KS_MAX = 1536;
+
 // Один слот матрицы: источник, приёмник, глубина [-1,1]. src/dst == NONE → слот выключен.
 struct ModSlot {
     uint8_t src;
@@ -85,6 +90,7 @@ struct VoiceParams {
     uint8_t   engine;                    // этап 12: VoiceEngine (Classic/FM/Karplus)
     float     pd_amount;                 // этап 12: глубина Phase Distortion (общая для PD-слотов) 0..1
     float     fm_ratio, fm_index;        // этап 12.3: FM — отношение частот, индекс модуляции
+    float     ks_damp, ks_decay, ks_pluck; // этап 12.4: Karplus — затухание петли, спад, характер щипка
     float     noise_level, ring_level;
     float     cutoff_hz, resonance;
     uint8_t   filt_mode;
@@ -110,6 +116,12 @@ struct Voice {
     uint32_t rng;                       // xorshift32 для шума
     float    amp_prev;                  // амплитуда прошлого блока (для лерпа VCA)
     float    velocity;                  // [0,1] сила нажатия, источник матрицы (взводится на note-on)
+    // Karplus-Strong (12.4): линия задержки + one-pole в петле. excite взводится на note-on, буфер
+    // заполняется шум-берстом на первом KS-блоке. Для Classic/FM не используется (память статична).
+    float    ks_buf[KS_MAX];
+    int      ks_len, ks_pos;
+    float    ks_last;
+    bool     ks_excite;
 };
 
 void voice_init(Voice *v, uint32_t seed);
