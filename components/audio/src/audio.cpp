@@ -137,6 +137,9 @@ static void build_synth_params(SynthParams *sp)
     sp->fx.od_on    = pr(PARAM_OD_ON) > 0.5f;
     sp->fx.od_drive = pr(PARAM_OD_DRIVE);
     sp->fx.od_mix   = pr(PARAM_OD_MIX);
+    sp->fx.drive_on  = pr(PARAM_DRIVE_ON) > 0.5f;
+    sp->fx.drive     = pr(PARAM_DRIVE);
+    sp->fx.drive_mix = pr(PARAM_DRIVE_MIX);
     sp->fx.delay_on       = pr(PARAM_DELAY_ON) > 0.5f;
     sp->fx.delay_time     = pr(PARAM_DELAY_TIME);
     sp->fx.delay_feedback = pr(PARAM_DELAY_FEEDBACK);
@@ -207,6 +210,10 @@ static void audio_task(void *arg)
     lfo_reset(&lfo[0], 0xA5A50001u);
     lfo_reset(&lfo[1], 0x5A5A0002u);
     const float lfo_dt = (float)BLOCK_FRAMES / (float)SAMPLE_RATE;
+
+    // Мастер-драйв (эффект): нормализация по числу голосов, сглаженная — чтобы смена числа звучащих
+    // голосов не давала щелчка уровня. Состояние переживает итерации (из audio_task не выходим).
+    float drive_norm = 1.0f;
 
     for (;;) {
         const int64_t t_start = esp_timer_get_time();
@@ -287,11 +294,17 @@ static void audio_task(void *arg)
         // 8. Схема, зафиксированная в tech-debt D-010, другая: soft-clip в ГОЛОСЕ + hard-clamp на
         // мастере. Приводим код к документу — hard-clamp так же надёжно даёт [-1,1] для FX, но
         // прозрачен ниже единицы, так что уровни перестают проседать без причины.
+        // Мастер-драйв нормализуется по числу активных голосов → характер не зависит от полифонии.
+        // Сглаживаем цель, чтобы смена числа голосов не щёлкала уровнем.
+        const float nv_target = (float)synth_active_count();
+        drive_norm += ((nv_target > 1.0f ? nv_target : 1.0f) - drive_norm) * 0.25f;
+
         for (int i = 0; i < BLOCK_FRAMES; ++i) {
             float m = fbuf[i];
             if (!test_on) {
                 m = fx_overdrive(m, &sp.fx);
-                if (m > 1.0f) m = 1.0f; else if (m < -1.0f) m = -1.0f;   // мастер hard-clamp (D-010)
+                m = fx_drive(m, &sp.fx, drive_norm);   // эффект «драйв» (грязь), независим от голосов
+                m = fx_master_limit(m);                // мягкий лимитер вместо hard-clamp (было D-010)
             }
             chL[i] = chR[i] = m;
         }

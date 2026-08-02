@@ -12,6 +12,29 @@ float AUDIO_HOT fx_overdrive(float x, const FxParams *p)
     return x + (wet - x) * p->od_mix;               // wet/dry (mix=1 → чистый wet, ограничен)
 }
 
+float fx_drive(float x, const FxParams *p, float norm)
+{
+    if (!p->drive_on || p->drive_mix <= 0.0f) return x;
+    const float n   = norm > 1.0f ? norm : 1.0f;    // ≥1: делим сумму на число голосов
+    const float in  = x / n;                        // ≈уровень одного голоса → характер стабилен
+    const float g   = 1.0f + p->drive * 9.0f;       // drive 0..1 → входной гейн 1..10×
+    float wet = in * g;                             // жёсткий клип — тот самый «перегруз»
+    if (wet > 1.0f) wet = 1.0f; else if (wet < -1.0f) wet = -1.0f;
+    return x + (wet - x) * p->drive_mix;            // wet/dry (mix=1 → чистый wet ∈[-1,1])
+}
+
+float fx_master_limit(float x)
+{
+    // Прозрачно до t, дальше плавно к ±1: наклон на колене = 1 (непрерывен), асимптота ровно ±1.
+    const float t = 0.7f;
+    const float a = fabsf(x);
+    if (a <= t) return x;
+    const float s = 1.0f - t;
+    const float e = a - t;
+    const float y = t + s * (e / (e + s));
+    return x < 0.0f ? -y : y;
+}
+
 void fx_delay_init(FxState *fx, float *buf_l, float *buf_r, int len)
 {
     fx->dl_l = buf_l;

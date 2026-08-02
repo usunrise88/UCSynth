@@ -47,6 +47,7 @@ var smokeParams = []proto.Param{
 	{ID: 29, Name: "voice_engine", Type: proto.TypeEnum, Min: 0, Max: 2, Cur: 0},
 	{ID: 30, Name: "fm_ratio", Type: proto.TypeFloat, Min: 0.5, Max: 8, Cur: 1},
 	{ID: 31, Name: "ks_decay", Type: proto.TypeFloat, Min: 0.8, Max: 0.999, Cur: 0.99},
+	{ID: 32, Name: "pd_amount", Type: proto.TypeFloat, Min: 0, Max: 1, Cur: 0},
 }
 
 // TestUnlistedBlocksCatchAll pins the rack catch-all: a block with controls that isn't in rackCols
@@ -62,6 +63,72 @@ func TestUnlistedBlocksCatchAll(t *testing.T) {
 	got := unlistedBlocks(mixed)
 	if len(got) != 2 || got[0] != "aaa_future" || got[1] != "zzz_future" {
 		t.Fatalf("unlisted blocks → %v, want [aaa_future zzz_future]", got)
+	}
+}
+
+// TestBlockEnabled pins which rack blocks are active per voice engine: осц/микшер только в Classic,
+// FM/Karplus — свои блоки, всё остальное (фильтр/огибающие/…) активно всегда.
+func TestBlockEnabled(t *testing.T) {
+	cases := []struct {
+		block  string
+		engine int
+		want   bool
+	}{
+		{"osc1", 0, true}, {"osc1", 1, false}, {"osc2", 2, false}, {"mixer", 0, true}, {"mixer", 1, false},
+		{"fm", 1, true}, {"fm", 0, false}, {"fm", 2, false},
+		{"ks", 2, true}, {"ks", 0, false}, {"ks", 1, false},
+		{"filter", 0, true}, {"filter", 1, true}, {"ampenv", 2, true}, {"lfo1", 1, true},
+	}
+	for _, tc := range cases {
+		if got := blockEnabled(tc.block, tc.engine); got != tc.want {
+			t.Errorf("blockEnabled(%q, %d) = %v, want %v", tc.block, tc.engine, got, tc.want)
+		}
+	}
+}
+
+// TestSlotIsPD checks the oscillator-slot PD detection that drives the contextual pd_amount knob.
+func TestSlotIsPD(t *testing.T) {
+	mk := func(typeCur float32) []*control {
+		return []*control{
+			newControl(proto.Param{ID: 1, Name: "osc1_type", Type: proto.TypeEnum, Min: 0, Max: 2, Cur: typeCur}),
+			newControl(proto.Param{ID: 2, Name: "osc1_level", Type: proto.TypeFloat, Max: 1, Cur: 1}),
+		}
+	}
+	if slotIsPD(mk(0)) || slotIsPD(mk(1)) {
+		t.Fatal("wavetable/VA slot must not report PD")
+	}
+	if !slotIsPD(mk(2)) {
+		t.Fatal("PD-typed slot must report PD")
+	}
+}
+
+// TestRackEngineModes renders the rack with each engine selected — the greying, oscPanel and scrim
+// paths must lay out without panics for Classic/FM/Karplus.
+func TestRackEngineModes(t *testing.T) {
+	for engine := 0; engine <= 2; engine++ {
+		c := New(func() {})
+		for _, p := range smokeParams {
+			c.controls = append(c.controls, newControl(p))
+		}
+		for _, ct := range c.controls {
+			if ct.p.Name == "voice_engine" {
+				ct.p.Cur = float32(engine)
+			}
+			if ct.p.Name == "osc1_type" {
+				ct.p.Cur = 2 // PD → exercise the contextual pd_amount branch
+			}
+		}
+		var r input.Router
+		gtx := layout.Context{Ops: new(op.Ops), Metric: testMetric, Source: r.Source()}
+		for i := 0; i < 2; i++ {
+			gtx.Reset()
+			gtx.Metric = testMetric
+			gtx.Constraints = layout.Exact(image.Pt(1100, 520))
+			if d := c.rack(gtx); d.Size.X == 0 {
+				t.Fatalf("engine %d: rack produced zero width", engine)
+			}
+			r.Frame(gtx.Ops)
+		}
 	}
 }
 

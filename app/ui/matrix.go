@@ -74,7 +74,7 @@ func (c *Controller) matrixPanel(gtx C, cs []*control) D {
 		rows = append(rows, layout.Rigid(w))
 	}
 	if len(knobs) > 0 {
-		add(func(gtx C) D { return c.cellRow(gtx, knobs, false) })
+		add(func(gtx C) D { return c.cellRow(gtx, knobs, false, c.setParam) })
 	}
 	for i := 1; i <= 8; i++ {
 		s := slots[i]
@@ -92,7 +92,7 @@ func (c *Controller) matrixPanel(gtx C, cs []*control) D {
 		add(func(gtx C) D { return c.matrixRow(gtx, i, s.src, s.dst, s.depth) })
 	}
 	if len(extra) > 0 {
-		add(func(gtx C) D { return c.cellRow(gtx, extra, false) })
+		add(func(gtx C) D { return c.cellRow(gtx, extra, false, c.setParam) })
 	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
 }

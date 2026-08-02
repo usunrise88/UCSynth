@@ -47,6 +47,42 @@ int main()
     FxParams hi{}; hi.od_on = true; hi.od_drive = 0.9f; hi.od_mix = 1.0f;
     check(fx_overdrive(0.3f, &hi) > fx_overdrive(0.3f, &lo), "больше драйва → сильнее насыщение");
 
+    // --- master drive (эффект): байпас, независимость от числа голосов, диапазон ---
+    FxParams dOff{}; dOff.drive_on = false; dOff.drive = 0.8f; dOff.drive_mix = 1.0f;
+    check(fx_drive(0.9f, &dOff, 4.0f) == 0.9f, "drive off → байпас");
+    FxParams dM0{}; dM0.drive_on = true; dM0.drive = 0.8f; dM0.drive_mix = 0.0f;
+    check(fx_drive(0.9f, &dM0, 4.0f) == 0.9f, "drive mix=0 → байпас");
+
+    FxParams d{}; d.drive_on = true; d.drive = 0.6f; d.drive_mix = 1.0f;
+    // Независимость от полифонии: один голос уровня v при norm=1 и сумма 4·v при norm=4 → одинаковый wet
+    // (mix=1 → выход = wet). Характер драйва не зависит от числа голосов.
+    for (float v = -0.6f; v <= 0.6f; v += 0.2f) {
+        const float w1 = fx_drive(v, &d, 1.0f);
+        const float w4 = fx_drive(4.0f * v, &d, 4.0f);
+        check(approx(w1, w4, 1e-5f), "drive: характер не зависит от числа голосов");
+    }
+    // wet ограничен [-1,1] при mix=1 (жёсткий клип), даже на большой сумме
+    for (float x = -8.0f; x <= 8.0f; x += 0.5f)
+        check(std::fabs(fx_drive(x, &d, 4.0f)) <= 1.001f, "drive: |out| ≤ 1 при mix=1");
+    // больше drive → раньше в клип (на одном уровне входа сильнее насыщение)
+    FxParams dHi{}; dHi.drive_on = true; dHi.drive = 1.0f; dHi.drive_mix = 1.0f;
+    FxParams dLo{}; dLo.drive_on = true; dLo.drive = 0.1f; dLo.drive_mix = 1.0f;
+    check(fx_drive(0.15f, &dHi, 1.0f) > fx_drive(0.15f, &dLo, 1.0f), "больше drive → сильнее насыщение");
+
+    // --- master limit: прозрачно ниже порога, ограничено ±1, монотонно ---
+    check(fx_master_limit(0.5f) == 0.5f, "limit: прозрачно ниже порога");
+    check(fx_master_limit(-0.5f) == -0.5f, "limit: прозрачно ниже порога (−)");
+    float lprev = -2.0f; bool lmono = true, lrng = true;
+    for (float x = -6.0f; x <= 6.0f; x += 0.05f) {
+        const float y = fx_master_limit(x);
+        if (y < -1.0f || y > 1.0f) lrng = false;      // строго внутри ±1 (асимптота)
+        if (y < lprev - 1e-4f) lmono = false;
+        lprev = y;
+    }
+    check(lrng, "limit: |out| < 1 всегда (без жёсткого клипа)");
+    check(lmono, "limit: монотонно");
+    check(fx_master_limit(100.0f) > 0.95f && fx_master_limit(100.0f) < 1.0f, "limit: большой вход → ~1");
+
     if (g_fail == 0) printf("OK: fx — все проверки пройдены\n");
     return g_fail ? 1 : 0;
 }

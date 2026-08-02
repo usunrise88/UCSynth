@@ -116,6 +116,50 @@ func TestPianoRollClickToggles(t *testing.T) {
 	}
 }
 
+// TestResetPatch checks the «Сброс» action drives every parameter back to its firmware default via the
+// device (SET id→Def, echoed back), moving changed params home.
+func TestResetPatch(t *testing.T) {
+	c := New(func() {})
+	params := []proto.Param{
+		{ID: 0, Name: "master_volume", Type: proto.TypeFloat, Min: 0, Max: 1, Def: 0.8, Cur: 0.8},
+		{ID: 1, Name: "cutoff", Type: proto.TypeFloat, Min: 20, Max: 20000, Def: 2400, Cur: 2400},
+	}
+	c1, c2 := net.Pipe()
+	fake := device.NewFake(c2, params, proto.Stat{})
+	go fake.Run()
+	dev := device.New(c1, nil)
+	dev.Start()
+	defer dev.Close()
+	c.dev = dev
+
+	deadline := time.Now().Add(2 * time.Second)
+	wait := func(ok func() bool, what string) {
+		for time.Now().Before(deadline) {
+			if ok() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("timeout waiting for %s", what)
+	}
+	wait(func() bool { return dev.Snapshot().State == device.Synced }, "sync")
+
+	dev.SetParam(0, 0.2) // move both params off their defaults
+	dev.SetParam(1, 500)
+	wait(func() bool {
+		v0, _ := dev.Snapshot().Param(0)
+		v1, _ := dev.Snapshot().Param(1)
+		return v0.Cur == 0.2 && v1.Cur == 500
+	}, "params changed")
+
+	c.resetPatch(dev.Snapshot())
+	wait(func() bool {
+		v0, _ := dev.Snapshot().Param(0)
+		v1, _ := dev.Snapshot().Param(1)
+		return v0.Cur == 0.8 && v1.Cur == 2400
+	}, "params reset to default")
+}
+
 // TestSeqTabPatternBrowser wires a connected fake device into the seq tab and checks the on-device
 // pattern directory is auto-listed on connect and rendered (handleSeqBrowser / layoutSeqTree).
 func TestSeqTabPatternBrowser(t *testing.T) {

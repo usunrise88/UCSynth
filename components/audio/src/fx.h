@@ -12,6 +12,11 @@ struct FxParams {
     bool  od_on;
     float od_drive;      // 0..1 → входной гейн в шейпер (1..12×)
     float od_mix;        // 0..1 wet/dry
+    // --- master drive (эффект «грязи» из hard-clamp суммы голосов; норм. по числу голосов → характер
+    //     не зависит от полифонии). Моно-сумма до split, после overdrive. ---
+    bool  drive_on;
+    float drive;         // 0..1 глубина сатурации (входной гейн 1..10× после нормализации)
+    float drive_mix;     // 0..1 wet/dry
     // --- delay (5.2) ---
     bool  delay_on;
     float delay_time;    // мс (≤1000)
@@ -76,3 +81,12 @@ void fx_reverb(FxState *fx, const FxParams *p, float *l, float *r, int n);
 // Без оверсэмплинга (алиасинг — осознанный риск, risks.md). wet = tanh(x·gain) всегда в [-1,1] → выход
 // ограничен при mix=1 (в т.ч. приручает сырую сумму голосов >1). Вызывается на моно-семпл до split.
 float fx_overdrive(float x, const FxParams *p);
+
+// Master drive: делит сумму на norm (≈уровень одного голоса → характер не зависит от числа голосов),
+// гейнит по drive и жёстко клипует (тот самый «перегруз»), затем wet/dry. norm — сглаженное число
+// активных голосов, считается в audio.cpp. Мемори-лесс. Без оверсэмплинга (жёсткий клип алиасит — D-026).
+float fx_drive(float x, const FxParams *p, float norm);
+
+// Мягкий мастер-лимитер: прозрачен ниже порога t, дальше плавно жмёт к ±1 (замена hard-clamp суммы
+// голосов — полифония не даёт грязного клипа). Наклон непрерывен на колене, асимптота ±1. Мемори-лесс.
+float fx_master_limit(float x);
