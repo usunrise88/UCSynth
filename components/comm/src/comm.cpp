@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "nvs.h"          // ESP_ERR_NVS_NOT_FOUND — коды хранилища пресетов/паттернов интерпретируем здесь
 
 static const char *TAG = "comm";
 

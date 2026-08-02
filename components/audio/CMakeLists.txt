@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "src/audio.cpp" "src/wavetable.cpp" "src/env.cpp" "src/filter.cpp" "src/voice.cpp" "src/synth.cpp" "src/lfo.cpp" "src/waveenv.cpp" "src/fx.cpp" "src/seq_engine.cpp" "src/osc_types.cpp"
+    SRCS "src/audio.cpp" "src/wavetable.cpp" "src/env.cpp" "src/filter.cpp" "src/voice.cpp" "src/synth.cpp" "src/lfo.cpp" "src/waveenv.cpp" "src/fx.cpp" "src/seq_engine.cpp" "src/seq_codec.cpp" "src/osc_types.cpp"
     INCLUDE_DIRS "include"
     # Всё приватное: audio.h тянет только stdint. Публичные REQUIRES протекали транзитивно —
     # display и comm (оба REQUIRES audio) наследовали include-пути esp_driver_i2s/gpio, а main
