@@ -151,6 +151,10 @@ typedef enum {
     PARAM_KS_DAMP      = 104, // Karplus: затухание петли (яркость) 0..1 (float)
     PARAM_KS_DECAY     = 105, // Karplus: спад струны 0.8..0.999 (float)
     PARAM_KS_PLUCK     = 106, // Karplus: характер щипка (тембр берста) 0..1 (float)
+    // --- мастер-драйв (эффект): грязь из клипа суммы голосов, нормализованная по числу голосов ---
+    PARAM_DRIVE_ON     = 107, // мастер-драйв вкл (bool)
+    PARAM_DRIVE        = 108, // глубина сатурации 0..1 (float)
+    PARAM_DRIVE_MIX    = 109, // wet/dry 0..1 (float)
     PARAM_COUNT
 } param_id_t;
 

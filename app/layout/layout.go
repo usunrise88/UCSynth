@@ -30,6 +30,7 @@ var Blocks = []Block{
 	{"waveenv", "Wave-огибающая"},
 	{"modmatrix", "Мод-матрица"},
 	{"overdrive", "Overdrive"},
+	{"drive", "Драйв"},
 	{"delay", "Delay"},
 	{"reverb", "Reverb"},
 	{"lofi", "Lo-fi"},
@@ -138,6 +139,10 @@ var byName = map[string]Field{
 	"od_on":    {"overdrive", "Вкл", "", nil},
 	"od_drive": {"overdrive", "Драйв", "", nil},
 	"od_mix":   {"overdrive", "Mix", "", nil},
+	// мастер-драйв (эффект «грязи» из клипа суммы голосов, независим от полифонии)
+	"drive_on":  {"drive", "Вкл", "", nil},
+	"drive":     {"drive", "Драйв", "", nil},
+	"drive_mix": {"drive", "Mix", "", nil},
 	// этап 5.2 — delay (стерео)
 	"delay_on":       {"delay", "Вкл", "", nil},
 	"delay_time":     {"delay", "Время", "мс", nil},

@@ -150,6 +150,10 @@ constexpr ParamDef kParams[] = {
     { PARAM_KS_DAMP,     "ks_damp",     PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.5f },
     { PARAM_KS_DECAY,    "ks_decay",    PARAM_TYPE_FLOAT,   0.8f,    0.999f,  0.99f },
     { PARAM_KS_PLUCK,    "ks_pluck",    PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.5f },
+    // мастер-драйв (эффект)
+    { PARAM_DRIVE_ON,    "drive_on",    PARAM_TYPE_BOOL,    0.0f,    1.0f,    0.0f },
+    { PARAM_DRIVE,       "drive",       PARAM_TYPE_FLOAT,   0.0f,    1.0f,    0.5f },
+    { PARAM_DRIVE_MIX,   "drive_mix",   PARAM_TYPE_FLOAT,   0.0f,    1.0f,    1.0f },
 };
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PARAM_COUNT,
               "таблица kParams разошлась с param_id_t");
