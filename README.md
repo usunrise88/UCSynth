@@ -13,8 +13,9 @@
 - **Управление** — десктоп-пульт на Go/Gio (Windows) по USB CDC (`app/`, этап 2): VST-облик с
   радиальными ручками, вкладки Синт / Секвенсор / Патчи, экранная клавиатура (FL-раскладка), графики STAT;
   позже энкодеры и тач.
-- **Экран** — отладочный OLED SSD1306 (I2C): осциллограф + параметры (временно, до ST7796).
-- **Ядра** — Core 0: аудио (I2S+DMA, DSP); Core 1: UI, дисплей, контролы, Serial.
+- **Экран** — цветной ST7796 (SPI) с тачем — этап 9 (в плане). Отладочный OLED снят с шины
+  (свою роль выполнил; статистика читается в GUI).
+- **Ядра** — Core 0: аудио (I2S+DMA, DSP); Core 1: UI, контролы, Serial.
 - **Сборка** — на Linux; **прошивка и отладка** — локально (Windows).
 
 Единая модель параметров: все источники управления пишут только через
@@ -41,9 +42,6 @@ USB-JTAG (`comm`): кадры `[55 AA][LEN][BODY][CRC16]`, опкоды GET/SET/
 - **Lo-fi** — bit-crush + отключение band-limit (алиасинг как фича).
 
 Ноты играются с ПК; всё рулится параметрами реестра (86 на этап 5; GUI/скрипт строятся из `LIST` динамически).
-
-**Отладочный OLED** (SSD1306 128×64, I2C; вне спеки — до цветного ST7796): splash,
-осциллограф формы волны, popup значения параметра при смене.
 
 На железе ✅ весь этап 3: голос, фильтр, обе ADSR, drone, lo-fi, glide; полифония **8 голосов =
 61.8% CPU, 0 underruns** на `-O2` (~7.1%/голос + 4.7% оверхед).
@@ -128,7 +126,6 @@ make app-test      # чистые пакеты + ui headless + кросс-сбо
 | [`docs/roadmap.md`](docs/roadmap.md) | План этапов |
 | [`docs/hardware.md`](docs/hardware.md) | Железо: модули, адреса, грабли |
 | [`docs/hardware-stage1-pcm5102.md`](docs/hardware-stage1-pcm5102.md) | Гайд: PCM5102 по I2S |
-| [`docs/hardware-oled-ssd1306.md`](docs/hardware-oled-ssd1306.md) | Гайд: OLED SSD1306 по I2C |
 | [`docs/serial-protocol.md`](docs/serial-protocol.md) | Контракт бинарного протокола |
 | [`docs/gui.md`](docs/gui.md) | GUI-контроллер (Go/Gio): сборка, запуск, структура |
 | [`docs/build-flash.md`](docs/build-flash.md) | Сборка и прошивка |
@@ -144,8 +141,7 @@ components/
   comm/          протокол Serial по USB-JTAG (Core 1) ← этап 0.3
   audio/         I2S + DSP-голос на Core 0 (этапы 1,3):
                  wavetable / filter / env / voice / synth (полифония, glide)
-  display/       отладочный OLED SSD1306 (Core 1)     ← вне спеки, до ST7796
-  io/            периферия: I2C, энкодеры, тач        — этап 8+
+  io/            периферия: I2C-шина + сканер, энкодеры, тач — этап 8+
 app/             GUI-контроллер на Go/Gio (Windows)   ← этап 2 (proto/serial/device/layout/ui)
 docs/            спецификация, гайды, контракты
 tools/           сборка, установка ESP-IDF, тестеры

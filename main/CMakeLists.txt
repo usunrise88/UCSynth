@@ -3,5 +3,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     # Слои архитектуры + компоненты IDF для проверки железа на бут-логе.
     # preset + nvs_flash — инициализация хранилища пресетов (этап 6).
-    REQUIRES audio control io comm display preset nvs_flash esp_psram spi_flash
+    REQUIRES audio control io comm preset nvs_flash esp_psram spi_flash
 )

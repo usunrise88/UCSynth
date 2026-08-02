@@ -21,7 +21,6 @@
 #include "audio.h"
 #include "comm.h"
 #include "control.h"
-#include "display.h"
 #include "io.h"
 #include "preset_store.h"
 #include "seq_store.h"
@@ -65,24 +64,21 @@ static void log_hw_info(void)
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
 }
 
-// Инициализация периферии, чьи задачи живут на Core 1 — выполняется САМА на Core 1.
+// Инициализация периферии, чьи задачи/ISR должны жить на Core 1 — выполняется САМА на Core 1.
 //
 // ESP-IDF выделяет прерывание периферии на том CPU, который вызвал esp_intr_alloc, а
 // usb_serial_jtag_driver_install и i2c_new_master_bus делают это внутри себя. app_main пиннут на
-// CPU0 (CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0), поэтому раньше задачи оказывались на Core 1 правильно,
-// а их ISR — на Core 0, ядре, отданном аудио. С подключённым OLED это ~600 входов ISR/с (1025 байт
-// на кадр через non-DMA I2C с 32-байтным FIFO, ~18 кадров/с) плюс каждый USB-пакет; каждый вход
-// вытесняет audio_task посреди блока, раздувая cpu_permille и s_late_blocks. Сейчас запас это
-// съедает, но на этапах 8–9 (MCP23017 INT + ST7796) это станет причиной дропов звука — и будет
-// выглядеть загадкой, потому что задачи-то на Core 1.
+// CPU0 (CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0), поэтому вызов отсюда посадил бы их ISR на Core 0 —
+// ядро, отданное аудио, где каждый вход вытесняет audio_task посреди блока (раздувает cpu_permille
+// и s_late_blocks). На этапах 8–9 к этому добавятся INT MCP23017 и SPI дисплея; поэтому держим всю
+// не-аудио периферию (и её ISR) на Core 1.
 //
 // i2s_new_channel в audio_init, наоборот, правильно зовётся с Core 0 — так и оставлено.
 static void core1_init_task(void *arg)
 {
     (void)arg;
-    comm_init();     // протокол Serial / USB CDC     (этап 0.3)
-    io_init();       // периферия: I2C, энкодеры, тач (этап 8+)
-    display_init();  // отладочный OLED SSD1306       (вне спеки, до ST7796)
+    comm_init();     // протокол Serial / USB CDC        (этап 0.3)
+    io_init();       // I2C-шина + сканер, периферия     (этап 8.1+)
     vTaskDelete(nullptr);
 }
 
@@ -93,7 +89,6 @@ static void init_core1_peripherals(void)
         ESP_LOGE(TAG, "не создать задачу init1 — периферия поднимается с Core 0 (ISR осядут там же)");
         comm_init();
         io_init();
-        display_init();
         return;
     }
     // Ждём, пока периферия поднимется: дальше идёт heartbeat, и лог должен быть последовательным.

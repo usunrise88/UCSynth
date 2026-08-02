@@ -157,15 +157,6 @@ g++ -std=c++17 -Wall -Wextra -O2 \
 
 "$OUT13"
 
-# Тест numfmt (формат значений в OLED-попапе: знак, округление, перенос).
-OUT14="$(mktemp -d)/numfmttest"
-g++ -std=c++17 -Wall -Wextra -O2 \
-    -I "$ROOT/components/display/src" \
-    "$ROOT/test/host/test_numfmt.cpp" \
-    -o "$OUT14"
-
-"$OUT14"
-
 # Тест preset (этап 6 — кодек пресетов: round-trip, путь, сброс-в-дефолт, транзиентные, гарды).
 OUT15="$(mktemp -d)/presettest"
 g++ -std=c++17 -Wall -Wextra -O2 \
