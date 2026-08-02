@@ -17,6 +17,15 @@ enum OscType : uint8_t {
     OSC_TYPE_COUNT
 };
 
+// Движок голоса (этап 12). Classic — 3 осц-слота (тип на слот); FM — 2-оператора; Karplus — щипок.
+// НЕ переупорядочивать: пишется в патчи параметром voice_engine, дописывать перед _COUNT.
+enum VoiceEngine : uint8_t {
+    ENG_CLASSIC = 0,
+    ENG_FM,          // 2-операторная FM (12.3)
+    ENG_KS,          // Karplus-Strong (12.4)
+    ENG_COUNT
+};
+
 // Осц-слот: форма (enum WaveForm), детюн в полутонах (дробные = центы), уровень в микшере [0,1],
 // тип (OscType). VA использует `wave` как выбор пилы/меандра/тр-ка; PD игнорирует `wave` (всегда sine).
 struct OscSlot {
@@ -73,7 +82,9 @@ struct ModSlot {
 // Параметры голоса — читаются раз в блок из control, общие для всех голосов (const).
 struct VoiceParams {
     OscSlot   osc[3];
+    uint8_t   engine;                    // этап 12: VoiceEngine (Classic/FM/Karplus)
     float     pd_amount;                 // этап 12: глубина Phase Distortion (общая для PD-слотов) 0..1
+    float     fm_ratio, fm_index;        // этап 12.3: FM — отношение частот, индекс модуляции
     float     noise_level, ring_level;
     float     cutoff_hz, resonance;
     uint8_t   filt_mode;

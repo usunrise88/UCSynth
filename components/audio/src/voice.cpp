@@ -158,35 +158,52 @@ void AUDIO_HOT voice_render(Voice *v, const VoiceParams *p, float sr, float *out
     const float q        = p->lofi ? exp2f((float)(p->lofi_bits - 1)) : 1.0f;
     const float qinv     = 1.0f / q;
 
-    for (int i = 0; i < n; ++i) {
-        const float o0 = need0 ? osc_slot_sample(p->osc[0], pos0, morph, v->phase[0], inc[0], mip[0], p->pd_amount) : 0.0f;
-        const float o1 = need1 ? osc_slot_sample(p->osc[1], pos1, morph, v->phase[1], inc[1], mip[1], p->pd_amount) : 0.0f;
-        const float o2 = need2 ? osc_slot_sample(p->osc[2], pos2, morph, v->phase[2], inc[2], mip[2], p->pd_amount) : 0.0f;
-
-        float mix = o0 * p->osc[0].level + o1 * p->osc[1].level + o2 * p->osc[2].level;
-        if (need_noise) mix += noise_next(v->rng) * p->noise_level;
-        if (need_ring)  mix += (o0 * o1) * p->ring_level;   // ring mod = осц1×осц2 (raw, до уровней)
-
+    // Тракт после генератора — общий для всех движков: фильтр → soft-clip → VCA → (lo-fi) → out.
+    // Заворот фаз через floorf, а не одним вычитанием: при inc > 1 (частота выше sample rate) вычесть
+    // единицу недостаточно, фаза растёт со скоростью inc−1 и не возвращается в [0,1); дальше теряется
+    // точность float (на ~1.7e7 дробная часть залипает — тишина), а выше 2^31 конверсия (int)phase — UB.
+    auto emit = [&](float mix, int i) {
         float y = filter_process(&v->filt, mix, &fc);
         y = y / (1.0f + fabsf(y));                  // soft-clip: headroom под сумму голосов (3.5)
-
         float s = y * amp;
         if (p->lofi) {                              // bit-crush (клампим, потом квантуем)
             if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
             s = roundf(s * q) * qinv;
         }
         out[i] = s;
-
         amp += amp_step;
-        // Заворот через floorf, а не одним вычитанием: при inc > 1 (частота выше sample rate)
-        // вычесть единицу недостаточно, фаза растёт со скоростью inc−1 и уже не возвращается в
-        // [0,1). Дальше теряется точность float — на ~1.7e7 ulp равен 2, дробная часть залипает и
-        // осциллятор отдаёт константу (тишина), а выше 2^31 конверсия (int)phase — UB. Кламп
-        // pitch-модуляции выше делает inc > 1 недостижимым штатно, но заворот должен быть верен
-        // сам по себе: это состояние живёт всю жизнь ноты и деградирует необратимо.
-        v->phase[0] += inc[0]; v->phase[0] -= floorf(v->phase[0]);   // фазы всегда двигаем
-        v->phase[1] += inc[1]; v->phase[1] -= floorf(v->phase[1]);   //   (свободнобегущие)
-        v->phase[2] += inc[2]; v->phase[2] -= floorf(v->phase[2]);
+    };
+
+    if (p->engine == ENG_FM) {
+        // 2-оператора (этап 12.3): несущая (phase[0], высота ноты) + модулятор (phase[1], ratio·несущая),
+        // фазовая модуляция (PM ≈ FM). Индекс — глубина. Тракт голоса (фильтр/VCA) сохраняется.
+        const float inc_c = inc[0];
+        const float inc_m = inc[0] * p->fm_ratio;
+        const int   mp    = mip[0];
+        for (int i = 0; i < n; ++i) {
+            const float m = wavetable_sample(WAVE_SINE, v->phase[1], mp);
+            float cph = v->phase[0] + p->fm_index * m;
+            cph -= floorf(cph);
+            emit(wavetable_sample(WAVE_SINE, cph, mp), i);
+            v->phase[0] += inc_c; v->phase[0] -= floorf(v->phase[0]);
+            v->phase[1] += inc_m; v->phase[1] -= floorf(v->phase[1]);
+        }
+    } else {
+        // Classic: 3 осц-слота (тип на слот) → микшер (+шум +ring). ENG_KS сюда же до 12.4.
+        for (int i = 0; i < n; ++i) {
+            const float o0 = need0 ? osc_slot_sample(p->osc[0], pos0, morph, v->phase[0], inc[0], mip[0], p->pd_amount) : 0.0f;
+            const float o1 = need1 ? osc_slot_sample(p->osc[1], pos1, morph, v->phase[1], inc[1], mip[1], p->pd_amount) : 0.0f;
+            const float o2 = need2 ? osc_slot_sample(p->osc[2], pos2, morph, v->phase[2], inc[2], mip[2], p->pd_amount) : 0.0f;
+
+            float mix = o0 * p->osc[0].level + o1 * p->osc[1].level + o2 * p->osc[2].level;
+            if (need_noise) mix += noise_next(v->rng) * p->noise_level;
+            if (need_ring)  mix += (o0 * o1) * p->ring_level;   // ring mod = осц1×осц2 (raw, до уровней)
+
+            emit(mix, i);
+            v->phase[0] += inc[0]; v->phase[0] -= floorf(v->phase[0]);   // фазы всегда двигаем
+            v->phase[1] += inc[1]; v->phase[1] -= floorf(v->phase[1]);   //   (свободнобегущие)
+            v->phase[2] += inc[2]; v->phase[2] -= floorf(v->phase[2]);
+        }
     }
     v->amp_prev = amp_target;
 }

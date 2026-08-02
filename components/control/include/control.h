@@ -145,6 +145,9 @@ typedef enum {
     PARAM_OSC2_TYPE    = 98,
     PARAM_OSC3_TYPE    = 99,
     PARAM_PD_AMOUNT    = 100, // глубина phase-distortion, общая для PD-слотов 0..1 (float)
+    PARAM_VOICE_ENGINE = 101, // движок голоса: 0 Classic / 1 FM / 2 Karplus (enum)
+    PARAM_FM_RATIO     = 102, // FM: отношение частот модулятор/несущая 0.5..8 (float)
+    PARAM_FM_INDEX     = 103, // FM: индекс модуляции 0..10 (float)
     PARAM_COUNT
 } param_id_t;
 

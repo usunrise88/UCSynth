@@ -208,3 +208,18 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -o "$OUT18"
 
 "$OUT18"
+
+# Тест engines (этап 12.3/12.4 — FM 2-оп спектр/боковые, Karplus затухание/питч).
+OUT19="$(mktemp -d)/enginestest"
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$ROOT/components/audio/src" \
+    "$ROOT/test/host/test_engines.cpp" \
+    "$ROOT/components/audio/src/voice.cpp" \
+    "$ROOT/components/audio/src/osc_types.cpp" \
+    "$ROOT/components/audio/src/env.cpp" \
+    "$ROOT/components/audio/src/waveenv.cpp" \
+    "$ROOT/components/audio/src/filter.cpp" \
+    "$ROOT/components/audio/src/wavetable.cpp" \
+    -o "$OUT19"
+
+"$OUT19"

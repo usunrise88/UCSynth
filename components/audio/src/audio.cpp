@@ -95,7 +95,10 @@ static void build_synth_params(SynthParams *sp)
     vp->osc[0] = { (uint8_t)pr(PARAM_WAVEFORM),  pr(PARAM_OSC1_DETUNE), pr(PARAM_OSC1_LEVEL), (uint8_t)pr(PARAM_OSC1_TYPE) };
     vp->osc[1] = { (uint8_t)pr(PARAM_OSC2_WAVE), pr(PARAM_OSC2_DETUNE), pr(PARAM_OSC2_LEVEL), (uint8_t)pr(PARAM_OSC2_TYPE) };
     vp->osc[2] = { (uint8_t)pr(PARAM_OSC3_WAVE), pr(PARAM_OSC3_DETUNE), pr(PARAM_OSC3_LEVEL), (uint8_t)pr(PARAM_OSC3_TYPE) };
+    vp->engine      = (uint8_t)pr(PARAM_VOICE_ENGINE);
     vp->pd_amount   = pr(PARAM_PD_AMOUNT);
+    vp->fm_ratio    = pr(PARAM_FM_RATIO);
+    vp->fm_index    = pr(PARAM_FM_INDEX);
     vp->noise_level = pr(PARAM_NOISE_LEVEL);
     vp->ring_level  = pr(PARAM_RING_LEVEL);
     vp->cutoff_hz   = pr(PARAM_CUTOFF);
