@@ -44,6 +44,7 @@ type Controller struct {
 	refreshBtn widget.Clickable
 	connectBtn widget.Clickable
 	panicBtn   widget.Clickable
+	resetBtn   widget.Clickable
 	toneOffBtn widget.Clickable
 
 	// parameter rack
@@ -435,6 +436,9 @@ func (c *Controller) handleButtons(gtx C) {
 		c.dev.AllNotesOff()
 		c.kb.AllOff()
 	}
+	if c.resetBtn.Clicked(gtx) && c.dev != nil {
+		c.resetPatch(c.dev.Snapshot())
+	}
 	if c.toneOffBtn.Clicked(gtx) && c.dev != nil {
 		if id, ok := paramID(c.dev.Snapshot(), "test_tone"); ok {
 			c.dev.SetParam(id, 0)
@@ -513,6 +517,8 @@ func (c *Controller) layoutTopBar(gtx C, snap device.Snapshot) D {
 			layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.connectBtn, connLabel, true, false, false) }),
 			layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
 			layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.panicBtn, "Panic", false, true, false) }),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+			layout.Rigid(func(gtx C) D { return c.obtn(gtx, &c.resetBtn, "Сброс", false, false, false) }),
 			layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
 			layout.Rigid(func(gtx C) D { return c.metricsText(gtx, snap) }),
 			layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
@@ -795,6 +801,21 @@ func (c *Controller) layoutFooter(gtx C) D {
 func (c *Controller) setParam(id uint16, val float32) {
 	if c.dev != nil {
 		c.dev.SetParam(id, val)
+	}
+}
+
+// resetPatch restores every parameter to its firmware default — a client-side «Init patch». The GUI
+// already knows each default from the LIST (proto.Param.Def), so no new opcode is needed: we just SET
+// each id back to its Def (the device coalesces the burst and echoes VALUEs, which snap the controls).
+// This resets the SOUND (осц/фильтр/огибающие/эффекты/движок) and also transport params to default —
+// seq_playing→0 stops playback. The sequencer PATTERN is separate NVS/engine state and is NOT cleared
+// (use the sequencer's «Очистить» for that).
+func (c *Controller) resetPatch(snap device.Snapshot) {
+	if c.dev == nil {
+		return
+	}
+	for _, p := range snap.Params {
+		c.dev.SetParam(p.ID, p.Def)
 	}
 }
 
