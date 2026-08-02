@@ -221,7 +221,7 @@ func (n *noteSink) midiAllOff() {
 var rackCols = [][]string{
 	{"osc1", "osc2", "osc3", "mixer"},
 	{"filter", "ampenv", "fltenv", "waveenv", "overdrive", "delay", "reverb"},
-	{"global", "lfo1", "lfo2", "modmatrix", "lofi", "seq", "arp", "debug", "misc"},
+	{"global", "engine", "lfo1", "lfo2", "modmatrix", "lofi", "seq", "arp", "debug", "misc"},
 }
 var colWeights = []float32{1, 1.15, 1}
 

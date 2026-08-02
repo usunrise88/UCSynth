@@ -35,6 +35,7 @@ var Blocks = []Block{
 	{"lofi", "Lo-fi"},
 	{"seq", "Секвенсор"},
 	{"arp", "Арпеджиатор"},
+	{"engine", "Движок"},
 	{"debug", "Отладка"},
 	{"misc", "Прочее"},
 }
@@ -64,6 +65,10 @@ var modDstLabels = []string{"—", "Pitch", "Cutoff", "Res", "Amp", "Wave-поз
 var arpModeLabels = []string{"Вверх", "Вниз", "Вверх-вниз", "Случайно"}
 var arpRateLabels = []string{"1/4", "1/8", "1/16", "1/32"}
 
+// этап 12 — тип осц-слота (OscType) и движок голоса (VoiceEngine) из voice.h.
+var oscTypeLabels = []string{"Wavetable", "VA", "Phase Dist"}
+var engineLabels = []string{"Classic", "FM", "Karplus"}
+
 // byName maps a firmware param name → its presentation. Names come from control.h (stable).
 var byName = map[string]Field{
 	// global
@@ -75,13 +80,16 @@ var byName = map[string]Field{
 	"waveform":    {"osc1", "Форма", "", waveLabels},
 	"osc1_level":  {"osc1", "Уровень", "", nil},
 	"osc1_detune": {"osc1", "Детюн", "полут.", nil},
+	"osc1_type":   {"osc1", "Тип", "", oscTypeLabels},
 	// osc2 / osc3
 	"osc2_wave":   {"osc2", "Форма", "", waveLabels},
 	"osc2_level":  {"osc2", "Уровень", "", nil},
 	"osc2_detune": {"osc2", "Детюн", "полут.", nil},
+	"osc2_type":   {"osc2", "Тип", "", oscTypeLabels},
 	"osc3_wave":   {"osc3", "Форма", "", waveLabels},
 	"osc3_level":  {"osc3", "Уровень", "", nil},
 	"osc3_detune": {"osc3", "Детюн", "полут.", nil},
+	"osc3_type":   {"osc3", "Тип", "", oscTypeLabels},
 	// mixer
 	"noise_level": {"mixer", "Шум", "", nil},
 	"ring_level":  {"mixer", "Ring mod", "", nil},
@@ -155,6 +163,14 @@ var byName = map[string]Field{
 	"arp_octaves": {"arp", "Октавы", "", nil},
 	"arp_rate":    {"arp", "Скорость", "", arpRateLabels},
 	"arp_hold":    {"arp", "Hold", "", nil},
+	// этап 12 — движок голоса + его параметры (тип осц-слота — в блоках osc1/2/3 выше)
+	"voice_engine": {"engine", "Движок", "", engineLabels},
+	"pd_amount":    {"engine", "PD глубина", "", nil},
+	"fm_ratio":     {"engine", "FM ratio", "", nil},
+	"fm_index":     {"engine", "FM index", "", nil},
+	"ks_damp":      {"engine", "KS damp", "", nil},
+	"ks_decay":     {"engine", "KS decay", "", nil},
+	"ks_pluck":     {"engine", "KS pluck", "", nil},
 	// debug
 	"test_tone":    {"debug", "Тест-тон", "", nil},
 	"test_tone_hz": {"debug", "Частота тона", "Гц", nil},
